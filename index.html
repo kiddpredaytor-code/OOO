@@ -62,6 +62,12 @@
 
         #floating-texts { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
         .float-text { position: absolute; color: #fff; font-weight: 900; font-size: 20px; text-shadow: 0 2px 4px #000, 0 0 8px #ff0055; pointer-events: none; animation: floatUp 0.8s cubic-bezier(0.1, 0.8, 0.3, 1) forwards; transform: translate(-50%, -50%); }
+        
+        #oracle-ui { position: absolute; top: 20px; right: 20px; pointer-events: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; z-index: 50;}
+        #oracle-chat { background: rgba(0, 10, 20, 0.85); color: #00e5ff; padding: 12px; border: 1px solid #00e5ff; border-radius: 8px; display: none; max-height: 250px; overflow-y: auto; width: 280px; font-size: 13px; text-shadow: 0 0 5px rgba(0,229,255,0.5); backdrop-filter: blur(5px); }
+        #oracle-input { width: 258px; display: none; background: rgba(0,0,0,0.7); color: #fff; border: 1px solid #00ff88; padding: 10px; border-radius: 8px; outline: none; }
+        #oracle-btn { background: radial-gradient(circle, #00e5ff 0%, #0088aa 100%); color: #000; font-weight: bold; border: 2px solid rgba(255,255,255,0.5); padding: 10px 20px; border-radius: 20px; cursor: pointer; box-shadow: 0 0 10px #00e5ff; text-transform: uppercase; font-size: 12px; }
+
         @keyframes floatUp { 0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; } 20% { transform: translate(-50%, -60px) scale(1.2); opacity: 1; } 100% { transform: translate(-50%, -120px) scale(0.8); opacity: 0; } }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
@@ -76,6 +82,12 @@
         <div id="screen-flash"></div>
         <div id="player-hp-container"><div id="player-hp-fill"></div></div>
         
+        <div id="oracle-ui">
+            <div id="oracle-chat"></div>
+            <input type="text" id="oracle-input" placeholder="Ask the AI Oracle...">
+            <button id="oracle-btn">ORACLE</button>
+        </div>
+
         <div id="zoom-container">
             <span>ZOOM</span>
             <input type="range" id="zoom-slider" min="15" max="100" value="45" orient="vertical">
@@ -119,6 +131,49 @@
         
         let globalTimeScale = 1.0; let targetCamDist = 45;
 
+        // --- GEMINI ORACLE ---
+        async function askOracle(text) {
+            const apiKey = "";
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [{ text }] }],
+                systemInstruction: { parts: [{ text: "You are the cynical magic oracle of the arena. Keep answers under 2 sentences." }] }
+            };
+            let delays = [1000, 2000, 4000, 8000, 16000];
+            for (let i = 0; i <= delays.length; i++) {
+                try {
+                    let res = await fetch(url, { method: "POST", body: JSON.stringify(payload) });
+                    if (!res.ok) throw new Error("API fail");
+                    let data = await res.json();
+                    return data.candidates?.[0]?.content?.parts?.[0]?.text || "The Oracle shrugs.";
+                } catch (e) {
+                    if (i === delays.length) return "Oracle connection shattered.";
+                    await new Promise(r => setTimeout(r, delays[i]));
+                }
+            }
+        }
+
+        document.getElementById('oracle-btn').addEventListener('pointerdown', async (e) => {
+            e.stopPropagation(); e.preventDefault();
+            const chat = document.getElementById('oracle-chat');
+            const inp = document.getElementById('oracle-input');
+            if (inp.style.display === 'none') {
+                chat.style.display = 'block'; inp.style.display = 'block';
+            } else {
+                const val = inp.value.trim();
+                if (val) {
+                    chat.innerHTML += `<div style="color:#aaa; margin-top:5px;"><b>You:</b> ${val}</div>`;
+                    inp.value = "Communing..."; inp.disabled = true;
+                    const reply = await askOracle(val);
+                    chat.innerHTML += `<div style="margin-top:2px;"><b>Oracle:</b> ${reply}</div>`;
+                    inp.value = ""; inp.disabled = false;
+                    chat.scrollTop = chat.scrollHeight;
+                } else {
+                    chat.style.display = 'none'; inp.style.display = 'none';
+                }
+            }
+        });
+
         const canvas = document.getElementById('game-canvas');
         const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
         renderer.setSize(window.innerWidth, window.innerHeight); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -130,8 +185,8 @@
         const dirLight = new THREE.DirectionalLight(0x00e5ff, 1.6);
         dirLight.position.set(-30, 100, 40); scene.add(dirLight);
 
-        const obstacles = []; const cameraColliders = []; const damageableColliders = [];
-        const cameraRaycaster = new THREE.Raycaster(); const beamRaycaster = new THREE.Raycaster();
+        const obstacles = []; const cameraColliders = []; const damageableColliders = []; const groundObjects = [];
+        const cameraRaycaster = new THREE.Raycaster(); const beamRaycaster = new THREE.Raycaster(); const heightRaycaster = new THREE.Raycaster();
 
         // 1. BASE GRID
         const gridHelper = new THREE.GridHelper(900, 180, COLORS.grid, 0x151525);
@@ -140,7 +195,7 @@
 
         const groundGeo = new THREE.PlaneGeometry(900, 900); const groundMat = new THREE.MeshPhongMaterial({ color: 0x0a0a12, depthWrite: true });
         const ground = new THREE.Mesh(groundGeo, groundMat); ground.rotation.x = -Math.PI / 2; scene.add(ground);
-        cameraColliders.push(ground); 
+        cameraColliders.push(ground); groundObjects.push(ground);
 
         // 2. WESTERN EXPANSION
         const extWidth = 450; const extDepth = 900; 
@@ -159,7 +214,7 @@
         const extMat = new THREE.MeshPhongMaterial({color: 0x162112, flatShading: true});
         const extMesh = new THREE.Mesh(extGeo, extMat);
         extMesh.position.set(-675, 0, 0); 
-        scene.add(extMesh); cameraColliders.push(extMesh);
+        scene.add(extMesh); cameraColliders.push(extMesh); groundObjects.push(extMesh);
 
         // 3. LAKE
         const waterGeo = new THREE.PlaneGeometry(180, 180); waterGeo.rotateX(-Math.PI/2);
@@ -167,7 +222,7 @@
         const water = new THREE.Mesh(waterGeo, waterMat);
         water.position.set(-675, -5, 100); scene.add(water);
 
-        // 4. MATHEMATICAL TOPOLOGY (REPLACES BROKEN RAYCASTING)
+        // 4. TOPOLOGY
         function getMapHeight(x, z) {
             if (x >= -450) return 0;
             let lx = x + 675; let lz = z;
@@ -191,7 +246,7 @@
         moon.add(new THREE.Mesh(new THREE.SphereGeometry(42, 32, 32), new THREE.MeshBasicMaterial({color: 0xffcc00, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending})));
         moon.position.set(300, 350, -200); scene.add(moon);
 
-        // 6. ENVIRONMENT GENERATION
+        // 6. ENVIRONMENT
         function spawnFlora(x, z, type) {
             const y = getMapHeight(x, z); if(y < -3) return;
             const grp = new THREE.Group();
@@ -295,24 +350,24 @@
             let limbs = {};
             
             if(golemType >= 0) {
-                r = 6.6; hp = 1500;
+                r = 8.58; hp = 2250;
                 let mat, glowMat, torsoGeo, headGeo, lArmGeo, rArmGeo, lLegGeo, rLegGeo;
                 let tP, hP, lAP, rAP, lLP, rLP;
                 
-                if(golemType === 0) { // Rock Melee
-                    color = 0x777777; mat = new THREE.MeshPhongMaterial({color: color}); glowMat = new THREE.MeshBasicMaterial({color: 0xff0055});
+                if(golemType === 0) {
+                    color = 0x8899aa; mat = new THREE.MeshPhongMaterial({color: color}); glowMat = new THREE.MeshBasicMaterial({color: 0xff0055});
                     torsoGeo = new THREE.BoxGeometry(6, 14, 5); tP = [0, 12, 0];
                     headGeo = new THREE.BoxGeometry(4, 4, 4); hP = [0, 21, 0];
                     lArmGeo = new THREE.BoxGeometry(3, 16, 3).translate(0, -7, 0); lAP = [-4.5, 18, 0]; rArmGeo = lArmGeo.clone(); rAP = [4.5, 18, 0];
                     lLegGeo = new THREE.BoxGeometry(3, 8, 3).translate(0, -4, 0); lLP = [-2, 8, 0]; rLegGeo = lLegGeo.clone(); rLP = [2, 8, 0];
-                } else if(golemType === 1) { // Sandstone Range
-                    color = 0x6b4226; mat = new THREE.MeshPhongMaterial({color: color, flatShading: true}); glowMat = new THREE.MeshBasicMaterial({color: 0xffaa00});
+                } else if(golemType === 1) { 
+                    color = 0xd2b48c; mat = new THREE.MeshPhongMaterial({color: color, flatShading: true}); glowMat = new THREE.MeshBasicMaterial({color: 0xffaa00});
                     torsoGeo = new THREE.BoxGeometry(8, 10, 6); tP = [0, 11, 0];
                     headGeo = new THREE.BoxGeometry(3, 3, 4); hP = [0, 16, 2];
                     lArmGeo = new THREE.BoxGeometry(4, 14, 4).translate(0, -6, 0); lAP = [-6, 15, 0]; rArmGeo = lArmGeo.clone(); rAP = [6, 15, 0];
                     lLegGeo = new THREE.BoxGeometry(3, 7, 3).translate(0, -3.5, 0); lLP = [-2.5, 7, 0]; rLegGeo = lLegGeo.clone(); rLP = [2.5, 7, 0];
-                } else { // Ice Control
-                    color = 0x88ccff; mat = new THREE.MeshPhongMaterial({color: color, transparent: true, opacity: 0.8, shininess: 100}); glowMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+                } else { 
+                    color = 0x44ffff; mat = new THREE.MeshPhongMaterial({color: color, transparent: true, opacity: 0.8, shininess: 100}); glowMat = new THREE.MeshBasicMaterial({color: 0xffffff});
                     torsoGeo = new THREE.ConeGeometry(5, 12, 4); tP = [0, 10, 0];
                     headGeo = new THREE.IcosahedronGeometry(2.5, 0); hP = [0, 17.5, 0];
                     lArmGeo = new THREE.ConeGeometry(2, 12, 4).translate(0, -5, 0); lAP = [-4.5, 14, 0]; rArmGeo = lArmGeo.clone(); rAP = [4.5, 14, 0];
@@ -328,7 +383,7 @@
                 limbs.rLeg = new THREE.Mesh(rLegGeo, mat); limbs.rLeg.position.set(...rLP); grp.add(limbs.rLeg);
 
                 if(golemType === 2) { const spike = new THREE.Mesh(new THREE.ConeGeometry(1, 6, 4).translate(0, 3, -3), mat); spike.rotation.x = -Math.PI/4; limbs.torso.add(spike); }
-                grp.scale.setScalar(1.15); // Imposing bulk
+                grp.scale.setScalar(1.5); 
             } else {
                 color = 0x552233; r = size; hp = 20 * size;
                 const body = new THREE.Mesh(new THREE.CylinderGeometry(size*0.8, size, size*2.5, 6).translate(0, size*1.25, 0), new THREE.MeshPhongMaterial({color: color})); grp.add(body);
@@ -339,13 +394,13 @@
             grp.position.set(px, getMapHeight(px,pz), pz);
             
             const rune = new THREE.Mesh(new THREE.RingGeometry(r*0.6, r*0.8, golemType>=0?8:5), new THREE.MeshBasicMaterial({ color: 0xff0055, transparent: true, opacity: 0.6, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
-            rune.position.y = (golemType>=0?20:size*2.5) + 1; rune.rotation.x = Math.PI/2; grp.add(rune);
+            rune.position.y = (golemType>=0?25:size*2.5) + 1; rune.rotation.x = Math.PI/2; grp.add(rune);
 
-            const hpBar = createHPBar(); hpBar.grp.position.y = golemType>=0 ? 25 : size*2.5 + 2; grp.add(hpBar.grp);
+            const hpBar = createHPBar(); hpBar.grp.position.y = golemType>=0 ? 30 : size*2.5 + 2; grp.add(hpBar.grp);
 
             grp.traverse(c => { if(c.isMesh && c.material && c.material.color) { c.userData.baseColor = c.material.color.getHex(); damageableColliders.push(c); } });
 
-            grp.userData = { hp: hp, maxHp: hp, hpBar: hpBar, flashTimer: 0, freezeTimer: 0, aiTimer: 0, aggro: 0, rune: rune, r: r, isGolem: golemType>=0, golemType: golemType, limbs: limbs, targetPos: new THREE.Vector3(), attackAnim: 0, hitAnim: 0, hasAttacked: false };
+            grp.userData = { hp: hp, maxHp: hp, hpBar: hpBar, flashTimer: 0, freezeTimer: 0, aiTimer: 0, isAwake: false, rune: rune, r: r, isGolem: golemType>=0, golemType: golemType, limbs: limbs, targetPos: new THREE.Vector3(), attackAnim: 0, hitAnim: 0, hasAttacked: false };
             scene.add(grp); dummies.push(grp); obstacles.push({ mesh: grp, isDummy: true, r: r });
         }
         
@@ -364,7 +419,11 @@
         window.addEventListener('pointermove', e => {
             const t = activeTouches[e.pointerId]; if (!t) return;
             if (t.type === 'joy') { let dx = e.clientX - t.ox; let dy = e.clientY - t.oy; const dist = Math.sqrt(dx*dx + dy*dy); const max = 45; if (dist > max) { dx = (dx/dist)*max; dy = (dy/dist)*max; } stickKnob.style.transform = `translate(${dx}px, ${dy}px)`; moveVector = { x: dx/max, y: dy/max };
-            } else if (t.type === 'cam') { let dx = e.clientX - t.lx; let dy = e.clientY - t.ly; camYaw -= dx * 0.00575; camPitch -= dy * 0.0046; camPitch = Math.max(0.05, Math.min(Math.PI - 0.05, camPitch)); t.lx = e.clientX; t.ly = e.clientY; }
+            } else if (t.type === 'cam') { 
+                let dx = e.clientX - t.lx; let dy = e.clientY - t.ly; 
+                camYaw -= dx * 0.006325; camPitch -= dy * 0.00506; 
+                camPitch = Math.max(0.05, Math.min(Math.PI - 0.05, camPitch)); t.lx = e.clientX; t.ly = e.clientY; 
+            }
         });
         const endTouch = (e) => { const t = activeTouches[e.pointerId]; if (t && t.type === 'joy') { moveVector = {x:0, y:0}; stickKnob.style.transition = 'transform 0.15s cubic-bezier(0.1, 0.8, 0.3, 1)'; stickKnob.style.transform = `translate(0px, 0px)`; } delete activeTouches[e.pointerId]; };
         window.addEventListener('pointerup', endTouch); window.addEventListener('pointercancel', endTouch);
@@ -494,13 +553,60 @@
         function createBeam(mana, sharp, line, aimDir) {
             const B = line + sharp; const length = 50 + dScale(B) * 15; const thickness = 0.5 + dScale(mana) * 0.8;
             const grp = new THREE.Group(); const startPos = new THREE.Vector3(); staffOrb.getWorldPosition(startPos);
+            
             const beamGeo = new THREE.CylinderGeometry(thickness, thickness, 1, 16); beamGeo.translate(0, 0.5, 0); beamGeo.rotateX(Math.PI/2);
             const beamMesh = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({color: COLORS.beam, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending})); grp.add(beamMesh);
-            const auraGeo = new THREE.CylinderGeometry(thickness*1.8, thickness*1.8, 1, 16); auraGeo.translate(0, 0.5, 0); auraGeo.rotateX(Math.PI/2);
-            const auraMesh = new THREE.Mesh(auraGeo, new THREE.MeshBasicMaterial({color: 0x0088aa, wireframe: true, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending})); grp.add(auraMesh);
+            
+            const spirals = new THREE.Group();
+            for(let i=0; i<4; i++) {
+                const sp = new THREE.Mesh(new THREE.CylinderGeometry(thickness*0.3, thickness*0.3, 1, 8).translate(thickness*1.8, 0.5, 0).rotateX(Math.PI/2), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
+                sp.rotation.z = (Math.PI/2) * i;
+                spirals.add(sp);
+            }
+            grp.add(spirals);
+            
+            const muzzle = new THREE.Mesh(new THREE.SphereGeometry(thickness*2.5, 16, 16), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
+            grp.add(muzzle);
+
             grp.position.copy(startPos); grp.lookAt(startPos.clone().add(aimDir)); scene.add(grp);
-            spells.push({ type: 'beam', mesh: grp, beamCore: beamMesh, beamAura: auraMesh, dir: aimDir, maxLen: length, damage: 10 + dScale(mana)*5, life: 1.0 + dScale(B) * 0.3, maxLife: 1.0 + dScale(B) * 0.3 });
+            spells.push({ type: 'beam', mesh: grp, beamCore: beamMesh, spirals: spirals, muzzle: muzzle, dir: aimDir, maxLen: length, damage: 10 + dScale(mana)*5, life: 1.0 + dScale(B) * 0.3, maxLife: 1.0 + dScale(B) * 0.3 });
             flashScreen(COLORS.beam); shakeTime = 1.0 + B*0.1; shakeIntensity = 0.5 + dScale(mana)*0.2;
+        }
+
+        function createSwarm(mana, sharp, round, line, aimDir) {
+            const count = 5 + Math.floor(dScale(line + mana) * 8); 
+            const startPos = new THREE.Vector3(); staffOrb.getWorldPosition(startPos);
+            for(let i=0; i<count; i++) {
+                const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1.5, 4).translate(0,0.75,0), new THREE.MeshBasicMaterial({color: 0xff0000}));
+                mesh.position.copy(startPos);
+                const spreadDir = aimDir.clone();
+                spreadDir.x += (Math.random()-0.5)*0.5; spreadDir.y += (Math.random()-0.5)*0.5; spreadDir.z += (Math.random()-0.5)*0.5;
+                spreadDir.normalize();
+                mesh.lookAt(startPos.clone().add(spreadDir)); mesh.rotateX(Math.PI/2); scene.add(mesh);
+                spells.push({ type: 'swarm', mesh: mesh, dir: spreadDir, speed: 70 + sharp * 8, damage: 7.5 + dScale(sharp) * 6, life: 2.0, startPos: startPos.clone(), hitList: [] });
+            }
+            flashScreen('#ff0000');
+        }
+
+        function createWave(mana, sharp, round, line, aimDir) {
+            const sum = mana + sharp + round; const size = 5 + dScale(sum) * 4;
+            const mesh = new THREE.Mesh(new THREE.CylinderGeometry(size, size, 1, 32), new THREE.MeshBasicMaterial({color: 0x00aaff, transparent: true, opacity: 0.6, side: THREE.DoubleSide}));
+            const startPos = new THREE.Vector3(); playerGroup.getWorldPosition(startPos); startPos.y += 2;
+            mesh.position.copy(startPos); mesh.lookAt(startPos.clone().add(aimDir)); mesh.rotateX(Math.PI/2); scene.add(mesh);
+            spells.push({ type: 'wave', mesh: mesh, dir: aimDir, speed: 40 + sharp*2, damage: 2 + mana, pushForce: 30 + round * 8, radius: size, life: 1.5, startPos: startPos.clone() });
+            flashScreen('#00aaff');
+        }
+
+        function createVortex(mana, sharp, round, line, aimDir) {
+            const sum = mana + round + line; const size = 1.5 + dScale(sum) * 0.8;
+            const mesh = new THREE.Group();
+            const core = new THREE.Mesh(new THREE.SphereGeometry(size, 16, 16), new THREE.MeshBasicMaterial({color: 0x00ff00, wireframe: true}));
+            const eventHolo = new THREE.Mesh(new THREE.SphereGeometry(size*0.8, 16, 16), new THREE.MeshBasicMaterial({color: 0x000000}));
+            mesh.add(core); mesh.add(eventHolo);
+            const startPos = playerGroup.position.clone().add(aimDir.clone().multiplyScalar(30)); startPos.y += 5;
+            mesh.position.copy(startPos); scene.add(mesh);
+            spells.push({ type: 'vortex', mesh: mesh, core: core, speed: 0, damage: 15 + dScale(sum) * 5, pullForce: 40 + dScale(sum) * 20, pullRadius: 40 + dScale(sum)*5, hitRadius: size, life: 3.0 + dScale(line) * 1.5, maxLife: 3.0 + dScale(line) * 1.5 });
+            flashScreen('#00ff00');
         }
 
         function createCloud(mana, round, line) {
@@ -539,56 +645,25 @@
         }
 
         function spawnEnemyRock(startPos, targetPos) {
-            const size = 1.5 + Math.random(); const mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(size, 0), new THREE.MeshPhongMaterial({color: 0x5c4033}));
+            const size = (1.5 + Math.random()) * 1.4; 
+            const mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(size, 0), new THREE.MeshPhongMaterial({color: 0x5c4033}));
             mesh.position.copy(startPos); scene.add(mesh); const dir = targetPos.clone().sub(startPos).normalize();
-            spells.push({ type: 'enemy_rock', mesh: mesh, dir: dir, speed: 60, damage: 15, life: 4.0, startPos: startPos.clone(), hitList: [] });
+            spells.push({ type: 'enemy_rock', mesh: mesh, dir: dir, speed: 45, damage: 19, life: 4.0, startPos: startPos.clone(), hitList: [] }); 
         }
 
         function spawnFrostProj(startPos, targetPos) {
-            const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5, 0), new THREE.MeshBasicMaterial({color: 0x00ffff}));
+            const size = 1.5 * 1.4; 
+            const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(size, 0), new THREE.MeshBasicMaterial({color: 0x00ffff}));
             mesh.position.copy(startPos); scene.add(mesh); const dir = targetPos.clone().sub(startPos).normalize();
-            spells.push({ type: 'frost_proj', mesh: mesh, dir: dir, speed: 45, damage: 10, life: 3.0, startPos: startPos.clone(), hitList: [] });
-        }
-
-        function createSwarm(mana, sharp, round, line, aimDir) {
-            const count = 3 + Math.floor(dScale(line + mana) * 5);
-            const startPos = new THREE.Vector3(); staffOrb.getWorldPosition(startPos);
-            for(let i=0; i<count; i++) {
-                const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1.5, 4).translate(0,0.75,0), new THREE.MeshBasicMaterial({color: 0xff0000}));
-                mesh.position.copy(startPos);
-                const spreadDir = aimDir.clone();
-                spreadDir.x += (Math.random()-0.5)*0.5; spreadDir.y += (Math.random()-0.5)*0.5; spreadDir.z += (Math.random()-0.5)*0.5;
-                spreadDir.normalize();
-                mesh.lookAt(startPos.clone().add(spreadDir)); mesh.rotateX(Math.PI/2); scene.add(mesh);
-                spells.push({ type: 'swarm', mesh: mesh, dir: spreadDir, speed: 70 + sharp * 8, damage: 5 + dScale(sharp) * 4, life: 2.0, startPos: startPos.clone(), hitList: [] });
-            }
-            flashScreen('#ff0000');
-        }
-
-        function createWave(mana, sharp, round, line, aimDir) {
-            const sum = mana + sharp + round; const size = 5 + dScale(sum) * 4;
-            const mesh = new THREE.Mesh(new THREE.CylinderGeometry(size, size, 1, 32), new THREE.MeshBasicMaterial({color: 0x00aaff, transparent: true, opacity: 0.6, side: THREE.DoubleSide}));
-            const startPos = new THREE.Vector3(); playerGroup.getWorldPosition(startPos); startPos.y += 2;
-            mesh.position.copy(startPos); mesh.lookAt(startPos.clone().add(aimDir)); mesh.rotateX(Math.PI/2); scene.add(mesh);
-            spells.push({ type: 'wave', mesh: mesh, dir: aimDir, speed: 40 + sharp*2, damage: 2 + mana, pushForce: 30 + round * 8, radius: size, life: 1.5, startPos: startPos.clone() });
-            flashScreen('#00aaff');
-        }
-
-        function createVortex(mana, sharp, round, line, aimDir) {
-            const sum = mana + round + line; const size = 1.5 + dScale(sum) * 0.8;
-            const mesh = new THREE.Group();
-            const core = new THREE.Mesh(new THREE.SphereGeometry(size, 16, 16), new THREE.MeshBasicMaterial({color: 0x00ff00, wireframe: true}));
-            const eventHolo = new THREE.Mesh(new THREE.SphereGeometry(size*0.8, 16, 16), new THREE.MeshBasicMaterial({color: 0x000000}));
-            mesh.add(core); mesh.add(eventHolo);
-            const startPos = playerGroup.position.clone().add(aimDir.clone().multiplyScalar(30)); startPos.y += 5;
-            mesh.position.copy(startPos); scene.add(mesh);
-            spells.push({ type: 'vortex', mesh: mesh, core: core, speed: 0, damage: 15 + dScale(sum) * 5, pullForce: 40 + dScale(sum) * 20, pullRadius: 40 + dScale(sum)*5, hitRadius: size, life: 3.0 + dScale(line) * 1.5, maxLife: 3.0 + dScale(line) * 1.5 });
-            flashScreen('#00ff00');
+            spells.push({ type: 'frost_proj', mesh: mesh, dir: dir, speed: 34, damage: 13, life: 3.0, startPos: startPos.clone(), hitList: [] }); 
         }
 
         function applyDamageToPlayer(amount) {
             PlayerStats.hp -= amount; flashScreen('#ff0000'); updateUI();
-            if(PlayerStats.hp <= 0) { PlayerStats.hp = PlayerStats.maxHp; playerGroup.position.set(0, getMapHeight(0,0), 0); updateUI(); }
+            if(PlayerStats.hp <= 0) { 
+                PlayerStats.hp = PlayerStats.maxHp; playerGroup.position.set(0, getMapHeight(0,0), 0); updateUI();
+                dummies.forEach(d => { d.userData.isAwake = false; d.userData.aggro = 0; }); 
+            }
         }
 
         function showDamageText(amount, pos3D, isCrit = false, isHeal = false) {
@@ -615,14 +690,15 @@
         function applyDamage(dummy, amount) {
             const isCrit = Math.random() < 0.25; const finalDamage = isCrit ? amount * 2.5 : amount;
             dummy.userData.hp -= finalDamage; dummy.userData.flashTimer = 0.15; dummy.userData.aggro += finalDamage;
-            dummy.userData.hitAnim = 0.3; // Stagger
+            dummy.userData.isAwake = true; 
+            dummy.userData.hitAnim = 0.3;
             dummy.traverse(c => { if(c.isMesh && c.material) c.material.color.setHex(0xffffff); });
             showDamageText(finalDamage, dummy.position, isCrit); spawnParticles(dummy.position, 0xffaa00, 10, 10, 0.4);
 
             if (dummy.userData.hp <= 0) {
                 spawnParticles(dummy.position, COLORS.sharp, 30, 25, 0.8, 1.5); spawnParticles(dummy.position, 0xffffff, 20, 40, 0.6, 1.0);
                 if(!dummy.userData.isGolem) { const angle = Math.random() * Math.PI * 2; const rad = 30 + Math.random() * 80; dummy.position.set(Math.cos(angle)*rad, getMapHeight(Math.cos(angle)*rad, Math.sin(angle)*rad), Math.sin(angle)*rad); const obs = obstacles.find(o => o.mesh === dummy); if(obs) { obs.x = dummy.position.x; obs.z = dummy.position.z; } } else { dummy.position.set(0, getMapHeight(0,-80), -80); }
-                dummy.userData.hp = dummy.userData.maxHp; dummy.userData.freezeTimer = 0; dummy.userData.aggro = 0;
+                dummy.userData.hp = dummy.userData.maxHp; dummy.userData.freezeTimer = 0; dummy.userData.aggro = 0; dummy.userData.isAwake = false;
             }
         }
 
@@ -727,11 +803,37 @@
                     if (sp.mesh.position.y <= groundH + 1.0) { triggerExplosion(sp.mesh.position, sp.mana, sp.sharp, true); scene.remove(sp.mesh); spells.splice(i, 1); }
                 }
                 else if (sp.type === 'beam') {
-                    const t = sp.life/sp.maxLife; sp.beamCore.material.opacity = t; sp.beamAura.material.opacity = t*0.6; sp.beamAura.scale.setScalar(1 + (1-t)*0.5);
+                    const t = sp.life/sp.maxLife; 
+                    sp.beamCore.material.opacity = t; 
+                    sp.spirals.children.forEach(c => c.material.opacity = t*0.8);
+                    sp.muzzle.scale.setScalar(1 + Math.sin(time * 40) * 0.3);
+                    sp.muzzle.material.opacity = t;
+                    
+                    sp.spirals.rotation.z += dt * 35; 
+
                     let currentLen = sp.maxLen; beamRaycaster.set(sp.mesh.position, sp.dir);
                     const intersects = beamRaycaster.intersectObjects(cameraColliders, true); if(intersects.length > 0 && intersects[0].distance < currentLen) { currentLen = intersects[0].distance; }
                     const dmgIntersects = beamRaycaster.intersectObjects(damageableColliders, false); if(dmgIntersects.length > 0 && dmgIntersects[0].distance < currentLen) { currentLen = dmgIntersects[0].distance; let hitDummy = dummies.find(d => d.children.includes(dmgIntersects[0].object)); if(hitDummy) applyDamage(hitDummy, sp.damage * dt * 60); }
-                    sp.beamCore.scale.z = currentLen; sp.beamAura.scale.z = currentLen; if(currentLen < sp.maxLen) { const hitPos = sp.mesh.position.clone().add(sp.dir.clone().multiplyScalar(currentLen)); spawnParticles(hitPos, COLORS.beam, 3, 10, 0.2, 1.5); }
+                    
+                    sp.beamCore.scale.z = currentLen; 
+                    sp.spirals.scale.z = currentLen; 
+                    
+                    if(currentLen < sp.maxLen) { 
+                        const hitPos = sp.mesh.position.clone().add(sp.dir.clone().multiplyScalar(currentLen)); 
+                        spawnParticles(hitPos, COLORS.beam, 4, 15, 0.2, 2.0); 
+                        if (Math.random() < 0.3) {
+                            const flash = new THREE.Mesh(new THREE.IcosahedronGeometry(Math.random()*3+1, 0), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending}));
+                            flash.position.copy(hitPos); flash.rotation.set(Math.random(), Math.random(), Math.random());
+                            scene.add(flash); activeParticles.push({mesh: flash, isFlash: true, life: 0.1, maxLife: 0.1});
+                        }
+                    }
+                    if(Math.random() < 0.6) { 
+                        const emitPos = sp.mesh.position.clone().add(sp.dir.clone().multiplyScalar(Math.random() * currentLen)); 
+                        const radialDir = new THREE.Vector3(1,0,0).applyAxisAngle(sp.dir, Math.random() * Math.PI * 2);
+                        emitPos.add(radialDir.multiplyScalar(Math.random() * 2));
+                        spawnParticles(emitPos, 0x00ffff, 1, 8, 0.2, 0.8); 
+                    }
+
                     if (sp.life <= 0) { scene.remove(sp.mesh); spells.splice(i, 1); }
                 }
                 else if (sp.type === 'shield') {
@@ -794,14 +896,14 @@
 
             dummies.forEach(d => {
                 const hpBar = d.userData.hpBar; if(hpBar) { hpBar.fg.scale.x = Math.max(0.01, d.userData.hp / d.userData.maxHp); hpBar.grp.lookAt(camera.position); }
-                if(d.userData.freezeTimer > 0) { d.userData.freezeTimer -= dt; d.traverse(c => { if(c.isMesh && c.material) c.material.color.setHex(0x88ccff); }); } 
+                if(d.userData.freezeTimer > 0) { d.userData.freezeTimer -= dt; d.traverse(c => { if(c.isMesh) c.material.color.setHex(0x88ccff); }); } 
                 else {
                     d.userData.rune.rotation.z -= dt * 3.0; 
                     if(d.userData.isGolem) {
                         d.userData.aiTimer -= dt;
                         let state = 'idle';
                         let distToPlayer = d.position.distanceTo(playerGroup.position);
-                        let isAggro = distToPlayer < 120 || d.userData.aggro > 0;
+                        let isAggro = d.userData.isAwake; 
 
                         if (d.userData.hitAnim > 0) {
                             state = 'hit'; d.userData.hitAnim -= dt;
@@ -809,7 +911,7 @@
                             state = 'attack'; d.userData.attackAnim -= dt;
                             if(d.userData.attackAnim <= 0.5 && !d.userData.hasAttacked) {
                                 d.userData.hasAttacked = true;
-                                if (d.userData.golemType === 0 && distToPlayer < 20) {
+                                if (d.userData.golemType === 0 && distToPlayer < 25) {
                                     applyDamageToPlayer(25);
                                     let kb = playerGroup.position.clone().sub(d.position).normalize();
                                     Physics.velocityY = 25;
@@ -820,7 +922,7 @@
                             }
                         } else if (isAggro) {
                             d.userData.targetPos.copy(playerGroup.position);
-                            let attackRange = d.userData.golemType === 0 ? 15 : (d.userData.golemType === 1 ? 55 : 75);
+                            let attackRange = d.userData.golemType === 0 ? 19 : (d.userData.golemType === 1 ? 69 : 94);
                             if (distToPlayer > attackRange) {
                                 state = 'walk';
                                 const dir = d.userData.targetPos.clone().sub(d.position).normalize(); dir.y = 0;
@@ -844,8 +946,8 @@
                             limbs.lArm.rotation.x = Math.sin(aniTime) * 0.6; limbs.rArm.rotation.x = -Math.sin(aniTime) * 0.6;
                             limbs.lLeg.rotation.x = -Math.sin(aniTime) * 0.6; limbs.rLeg.rotation.x = Math.sin(aniTime) * 0.6;
                             limbs.torso.rotation.x = 0;
-                            if (d.userData.golemType === 1 && Math.random() < 0.2) spawnParticles(d.position, 0x6b4226, 1, 3, 0.5, 1, true);
-                            if (d.userData.golemType === 2 && Math.random() < 0.1) spawnParticles(d.position, 0x88ccff, 1, 2, 0.6);
+                            if (d.userData.golemType === 1 && Math.random() < 0.2) spawnParticles(d.position, 0xd2b48c, 1, 3, 0.5, 1, true);
+                            if (d.userData.golemType === 2 && Math.random() < 0.1) spawnParticles(d.position, 0x44ffff, 1, 2, 0.6);
                         } else if (state === 'attack') {
                             let prog = 1.0 - d.userData.attackAnim;
                             if (d.userData.golemType === 0) { limbs.rArm.rotation.x = prog < 0.5 ? -Math.PI : THREE.MathUtils.lerp(limbs.rArm.rotation.x, Math.PI/4, 0.3); } 
@@ -855,15 +957,15 @@
                         else {
                             limbs.lArm.rotation.x = Math.sin(time*2)*0.1; limbs.rArm.rotation.x = -Math.sin(time*2)*0.1;
                             limbs.lLeg.rotation.x = 0; limbs.rLeg.rotation.x = 0; limbs.torso.rotation.x = 0;
-                            if (d.userData.golemType === 2 && Math.random() < 0.05) spawnParticles(d.position, 0x88ccff, 1, 2, 0.6);
+                            if (d.userData.golemType === 2 && Math.random() < 0.05) spawnParticles(d.position, 0x44ffff, 1, 2, 0.6);
                         }
                     }
 
-                    if (d.userData.flashTimer > 0) { d.userData.flashTimer -= dt; if (d.userData.flashTimer <= 0) { d.traverse(c => { if(c.isMesh && c.material && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); } } else { d.traverse(c => { if(c.isMesh && c.material && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); }
+                    if (d.userData.flashTimer > 0) { d.userData.flashTimer -= dt; if (d.userData.flashTimer <= 0) { d.traverse(c => { if(c.isMesh && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); } } else { d.traverse(c => { if(c.isMesh && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); }
                 }
             });
 
-            for(let i = ghosts.length - 1; i >= 0; i--) { const g = ghosts[i]; g.life -= rawDt; if(g.life <= 0) { scene.remove(g.mesh); ghosts.splice(i, 1); } else { const op = (g.life / g.maxLife) * 0.4; g.mesh.traverse(c => { if(c.isMesh && c.material) c.material.opacity = op; }); } }
+            for(let i = ghosts.length - 1; i >= 0; i--) { const g = ghosts[i]; g.life -= rawDt; if(g.life <= 0) { scene.remove(g.mesh); ghosts.splice(i, 1); } else { const op = (g.life / g.maxLife) * 0.4; g.mesh.traverse(c => { if(c.isMesh) c.material.opacity = op; }); } }
             for (let i = activeParticles.length - 1; i >= 0; i--) {
                 const p = activeParticles[i]; p.life -= dt;
                 if (p.life <= 0) { scene.remove(p.mesh); activeParticles.splice(i, 1); } 
