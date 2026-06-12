@@ -125,11 +125,26 @@
         function dScale(value) { return Math.pow(value, 0.65); } 
 
         const State = { mana: 0, sharp: 0, round: 0, line: 0, spellType: 'NONE' };
-        const PlayerStats = { hp: 100, maxHp: 100, baseSpeed: 28, speedMultiplier: 1.0, buffTimer: 0, lastMana: 0, isHighEnhance: false, healTimer: 0, healRate: 0, titanTimer: 0, titanMult: 1.0, frostTimer: 0 };
-        const Physics = { velocityY: 0, gravity: 75, isGrounded: true, baseJumpForce: 30 };
+        // Added activeAura tracking
+        const PlayerStats = { hp: 100, maxHp: 100, baseSpeed: 28, speedMultiplier: 1.0, buffTimer: 0, lastMana: 0, isHighEnhance: false, healTimer: 0, healRate: 0, titanTimer: 0, titanMult: 1.0, frostTimer: 0, activeAura: null };
+        // Fixed physics: decoupled velocities for momentum
+        const Physics = { velX: 0, velZ: 0, velocityY: 0, gravity: 75, isGrounded: true, baseJumpForce: 30 };
         const COLORS = { mana: 0x00e5ff, sharp: 0xff0055, round: 0xa200ff, line: 0x00ff88, cast: 0xffaa00, env: 0x05050a, grid: 0x2a2a4a, meteor: 0xff4400, beam: 0x00ffcc, cloud: 0x6688ff, heal: 0x00ff55, terrain: 0x8b5a2b, titan: 0xffcc00 };
         
         let globalTimeScale = 1.0; let targetCamDist = 45;
+
+        // --- CACHING SYSTEM (OPTIMIZATION) ---
+        const GeoCache = {
+            particleIco: new THREE.IcosahedronGeometry(0.3, 0),
+            particleOct: new THREE.OctahedronGeometry(0.3, 0),
+            particleBox: new THREE.BoxGeometry(0.4, 0.4, 0.4),
+            particleTet: new THREE.TetrahedronGeometry(0.3, 0),
+            auraLayer1: new THREE.CylinderGeometry(1, 1, 1, 3).translate(0, 0.5, 0).rotateX(Math.PI/2),
+            auraLayer2: new THREE.CylinderGeometry(1, 1, 1, 4).translate(0, 0.5, 0).rotateX(Math.PI/2),
+            coreBeam: new THREE.CylinderGeometry(1, 1, 1, 16).translate(0, 0.5, 0).rotateX(Math.PI/2),
+            muzzleSphere: new THREE.SphereGeometry(1, 16, 16)
+        };
+        const particleGeos = [GeoCache.particleIco, GeoCache.particleOct, GeoCache.particleBox, GeoCache.particleTet];
 
         // --- GEMINI ORACLE ---
         async function askOracle(text) {
@@ -324,7 +339,6 @@
         scene.add(playerGroup); let playerRadius = 1.5;
 
         const spells = []; const summons = []; const clouds = []; const dummies = []; const activeParticles = []; const ghosts = [];
-        const particleGeos = [new THREE.IcosahedronGeometry(0.3, 0), new THREE.OctahedronGeometry(0.3, 0), new THREE.BoxGeometry(0.4, 0.4, 0.4), new THREE.TetrahedronGeometry(0.3, 0)];
 
         function spawnParticles(pos, colorHex, count, speed, lifeBase, scaleMult=1, isSmoke=false) {
             if(activeParticles.length > 500) return; 
@@ -344,46 +358,76 @@
             grp.add(bg); grp.add(fg); return { grp, fg };
         }
 
-        // --- ANIMATED GOLEMS ---
+        // --- ANIMATED GOLEMS & ENTITIES ---
         function createDummy(size, golemType=-1) {
             const grp = new THREE.Group(); let hp, r, color;
             let limbs = {};
             
             if(golemType >= 0) {
-                r = 8.58; hp = 2250;
-                let mat, glowMat, torsoGeo, headGeo, lArmGeo, rArmGeo, lLegGeo, rLegGeo;
-                let tP, hP, lAP, rAP, lLP, rLP;
-                
-                if(golemType === 0) {
-                    color = 0x8899aa; mat = new THREE.MeshPhongMaterial({color: color}); glowMat = new THREE.MeshBasicMaterial({color: 0xff0055});
-                    torsoGeo = new THREE.BoxGeometry(6, 14, 5); tP = [0, 12, 0];
-                    headGeo = new THREE.BoxGeometry(4, 4, 4); hP = [0, 21, 0];
-                    lArmGeo = new THREE.BoxGeometry(3, 16, 3).translate(0, -7, 0); lAP = [-4.5, 18, 0]; rArmGeo = lArmGeo.clone(); rAP = [4.5, 18, 0];
-                    lLegGeo = new THREE.BoxGeometry(3, 8, 3).translate(0, -4, 0); lLP = [-2, 8, 0]; rLegGeo = lLegGeo.clone(); rLP = [2, 8, 0];
-                } else if(golemType === 1) { 
-                    color = 0xd2b48c; mat = new THREE.MeshPhongMaterial({color: color, flatShading: true}); glowMat = new THREE.MeshBasicMaterial({color: 0xffaa00});
-                    torsoGeo = new THREE.BoxGeometry(8, 10, 6); tP = [0, 11, 0];
-                    headGeo = new THREE.BoxGeometry(3, 3, 4); hP = [0, 16, 2];
-                    lArmGeo = new THREE.BoxGeometry(4, 14, 4).translate(0, -6, 0); lAP = [-6, 15, 0]; rArmGeo = lArmGeo.clone(); rAP = [6, 15, 0];
-                    lLegGeo = new THREE.BoxGeometry(3, 7, 3).translate(0, -3.5, 0); lLP = [-2.5, 7, 0]; rLegGeo = lLegGeo.clone(); rLP = [2.5, 7, 0];
-                } else { 
-                    color = 0x44ffff; mat = new THREE.MeshPhongMaterial({color: color, transparent: true, opacity: 0.8, shininess: 100}); glowMat = new THREE.MeshBasicMaterial({color: 0xffffff});
-                    torsoGeo = new THREE.ConeGeometry(5, 12, 4); tP = [0, 10, 0];
-                    headGeo = new THREE.IcosahedronGeometry(2.5, 0); hP = [0, 17.5, 0];
-                    lArmGeo = new THREE.ConeGeometry(2, 12, 4).translate(0, -5, 0); lAP = [-4.5, 14, 0]; rArmGeo = lArmGeo.clone(); rAP = [4.5, 14, 0];
-                    lLegGeo = new THREE.BoxGeometry(3, 6, 3).translate(0, -3, 0); lLP = [-2.5, 6, 0]; rLegGeo = lLegGeo.clone(); rLP = [2.5, 6, 0];
-                }
+                if(golemType === 3) {
+                    // "Goku" Model Alternative
+                    r = 5.0; hp = 4500;
+                    const giMat = new THREE.MeshPhongMaterial({color: 0xff6600, flatShading: true});
+                    const skinMat = new THREE.MeshPhongMaterial({color: 0xffdcb1});
+                    const hairMat = new THREE.MeshPhongMaterial({color: 0xffdd00, emissive: 0x442200});
+                    const beltMat = new THREE.MeshPhongMaterial({color: 0x0000aa});
+                    
+                    limbs.torso = new THREE.Group(); limbs.torso.position.set(0, 11, 0);
+                    const chest = new THREE.Mesh(new THREE.BoxGeometry(5, 7, 3), giMat);
+                    const belt = new THREE.Mesh(new THREE.BoxGeometry(5.2, 1, 3.2), beltMat); belt.position.y = -3;
+                    limbs.torso.add(chest); limbs.torso.add(belt); grp.add(limbs.torso);
+                    
+                    limbs.head = new THREE.Group(); limbs.head.position.set(0, 16.5, 0);
+                    const headBase = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 3), skinMat); limbs.head.add(headBase);
+                    for(let i=0; i<6; i++) {
+                        const spike = new THREE.Mesh(new THREE.ConeGeometry(0.8, 4, 4).translate(0, 2, 0), hairMat);
+                        spike.rotation.set((Math.random()-0.5)*0.5 - 0.2, (Math.random()-0.5)*0.5, (Math.random()-0.5)*0.8);
+                        spike.position.y = 1; limbs.head.add(spike);
+                    }
+                    grp.add(limbs.head);
+                    
+                    limbs.lArm = new THREE.Mesh(new THREE.BoxGeometry(2, 8, 2).translate(0,-3,0), skinMat); limbs.lArm.position.set(-3.5, 14, 0); grp.add(limbs.lArm);
+                    limbs.rArm = new THREE.Mesh(new THREE.BoxGeometry(2, 8, 2).translate(0,-3,0), skinMat); limbs.rArm.position.set(3.5, 14, 0); grp.add(limbs.rArm);
+                    limbs.lLeg = new THREE.Mesh(new THREE.BoxGeometry(2.5, 7, 2.5).translate(0,-3.5,0), giMat); limbs.lLeg.position.set(-1.5, 7, 0); grp.add(limbs.lLeg);
+                    limbs.rLeg = new THREE.Mesh(new THREE.BoxGeometry(2.5, 7, 2.5).translate(0,-3.5,0), giMat); limbs.rLeg.position.set(1.5, 7, 0); grp.add(limbs.rLeg);
+                    
+                    grp.scale.setScalar(1.2);
+                } else {
+                    r = 8.58; hp = 2250;
+                    let mat, glowMat, torsoGeo, headGeo, lArmGeo, rArmGeo, lLegGeo, rLegGeo;
+                    let tP, hP, lAP, rAP, lLP, rLP;
+                    
+                    if(golemType === 0) {
+                        color = 0x8899aa; mat = new THREE.MeshPhongMaterial({color: color}); glowMat = new THREE.MeshBasicMaterial({color: 0xff0055});
+                        torsoGeo = new THREE.BoxGeometry(6, 14, 5); tP = [0, 12, 0];
+                        headGeo = new THREE.BoxGeometry(4, 4, 4); hP = [0, 21, 0];
+                        lArmGeo = new THREE.BoxGeometry(3, 16, 3).translate(0, -7, 0); lAP = [-4.5, 18, 0]; rArmGeo = lArmGeo.clone(); rAP = [4.5, 18, 0];
+                        lLegGeo = new THREE.BoxGeometry(3, 8, 3).translate(0, -4, 0); lLP = [-2, 8, 0]; rLegGeo = lLegGeo.clone(); rLP = [2, 8, 0];
+                    } else if(golemType === 1) { 
+                        color = 0xd2b48c; mat = new THREE.MeshPhongMaterial({color: color, flatShading: true}); glowMat = new THREE.MeshBasicMaterial({color: 0xffaa00});
+                        torsoGeo = new THREE.BoxGeometry(8, 10, 6); tP = [0, 11, 0];
+                        headGeo = new THREE.BoxGeometry(3, 3, 4); hP = [0, 16, 2];
+                        lArmGeo = new THREE.BoxGeometry(4, 14, 4).translate(0, -6, 0); lAP = [-6, 15, 0]; rArmGeo = lArmGeo.clone(); rAP = [6, 15, 0];
+                        lLegGeo = new THREE.BoxGeometry(3, 7, 3).translate(0, -3.5, 0); lLP = [-2.5, 7, 0]; rLegGeo = lLegGeo.clone(); rLP = [2.5, 7, 0];
+                    } else { 
+                        color = 0x44ffff; mat = new THREE.MeshPhongMaterial({color: color, transparent: true, opacity: 0.8, shininess: 100}); glowMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+                        torsoGeo = new THREE.ConeGeometry(5, 12, 4); tP = [0, 10, 0];
+                        headGeo = new THREE.IcosahedronGeometry(2.5, 0); hP = [0, 17.5, 0];
+                        lArmGeo = new THREE.ConeGeometry(2, 12, 4).translate(0, -5, 0); lAP = [-4.5, 14, 0]; rArmGeo = lArmGeo.clone(); rAP = [4.5, 14, 0];
+                        lLegGeo = new THREE.BoxGeometry(3, 6, 3).translate(0, -3, 0); lLP = [-2.5, 6, 0]; rLegGeo = lLegGeo.clone(); rLP = [2.5, 6, 0];
+                    }
 
-                limbs.torso = new THREE.Mesh(torsoGeo, mat); limbs.torso.position.set(...tP); grp.add(limbs.torso);
-                limbs.head = new THREE.Mesh(headGeo, mat); limbs.head.position.set(...hP); grp.add(limbs.head);
-                const eyes = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.5, 3.2), glowMat); eyes.position.set(0, hP[1], hP[2]+1); grp.add(eyes);
-                limbs.lArm = new THREE.Mesh(lArmGeo, mat); limbs.lArm.position.set(...lAP); grp.add(limbs.lArm);
-                limbs.rArm = new THREE.Mesh(rArmGeo, mat); limbs.rArm.position.set(...rAP); grp.add(limbs.rArm);
-                limbs.lLeg = new THREE.Mesh(lLegGeo, mat); limbs.lLeg.position.set(...lLP); grp.add(limbs.lLeg);
-                limbs.rLeg = new THREE.Mesh(rLegGeo, mat); limbs.rLeg.position.set(...rLP); grp.add(limbs.rLeg);
+                    limbs.torso = new THREE.Mesh(torsoGeo, mat); limbs.torso.position.set(...tP); grp.add(limbs.torso);
+                    limbs.head = new THREE.Mesh(headGeo, mat); limbs.head.position.set(...hP); grp.add(limbs.head);
+                    const eyes = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.5, 3.2), glowMat); eyes.position.set(0, hP[1], hP[2]+1); grp.add(eyes);
+                    limbs.lArm = new THREE.Mesh(lArmGeo, mat); limbs.lArm.position.set(...lAP); grp.add(limbs.lArm);
+                    limbs.rArm = new THREE.Mesh(rArmGeo, mat); limbs.rArm.position.set(...rAP); grp.add(limbs.rArm);
+                    limbs.lLeg = new THREE.Mesh(lLegGeo, mat); limbs.lLeg.position.set(...lLP); grp.add(limbs.lLeg);
+                    limbs.rLeg = new THREE.Mesh(rLegGeo, mat); limbs.rLeg.position.set(...rLP); grp.add(limbs.rLeg);
 
-                if(golemType === 2) { const spike = new THREE.Mesh(new THREE.ConeGeometry(1, 6, 4).translate(0, 3, -3), mat); spike.rotation.x = -Math.PI/4; limbs.torso.add(spike); }
-                grp.scale.setScalar(1.5); 
+                    if(golemType === 2) { const spike = new THREE.Mesh(new THREE.ConeGeometry(1, 6, 4).translate(0, 3, -3), mat); spike.rotation.x = -Math.PI/4; limbs.torso.add(spike); }
+                    grp.scale.setScalar(1.5);
+                } 
             } else {
                 color = 0x552233; r = size; hp = 20 * size;
                 const body = new THREE.Mesh(new THREE.CylinderGeometry(size*0.8, size, size*2.5, 6).translate(0, size*1.25, 0), new THREE.MeshPhongMaterial({color: color})); grp.add(body);
@@ -393,7 +437,8 @@
             const pz = golemType >= 0 ? (Math.random()-0.5)*400 : Math.sin(Math.random()*Math.PI*2) * (30+Math.random()*200);
             grp.position.set(px, getMapHeight(px,pz), pz);
             
-            const rune = new THREE.Mesh(new THREE.RingGeometry(r*0.6, r*0.8, golemType>=0?8:5), new THREE.MeshBasicMaterial({ color: 0xff0055, transparent: true, opacity: 0.6, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+            const runeColor = golemType === 3 ? 0xffdd00 : 0xff0055;
+            const rune = new THREE.Mesh(new THREE.RingGeometry(r*0.6, r*0.8, golemType>=0?8:5), new THREE.MeshBasicMaterial({ color: runeColor, transparent: true, opacity: 0.6, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
             rune.position.y = (golemType>=0?25:size*2.5) + 1; rune.rotation.x = Math.PI/2; grp.add(rune);
 
             const hpBar = createHPBar(); hpBar.grp.position.y = golemType>=0 ? 30 : size*2.5 + 2; grp.add(hpBar.grp);
@@ -405,6 +450,7 @@
         }
         
         createDummy(4.5, 0); createDummy(4.5, 1); createDummy(4.5, 2);
+        createDummy(0, 3); // Spawning the Saiyan
         for(let i=0; i<15; i++) createDummy(1.2 + Math.random()*1.5);
 
         // --- CONTROLS ---
@@ -438,7 +484,9 @@
             if (m===0 && s===0 && r===0 && l===0) { State.spellType = 'NONE'; predEl.innerText = "NONE"; castBtn.style.boxShadow = `0 0 10px rgba(255,255,255,0.1)`; castBtn.style.background = `radial-gradient(circle, #444 0%, #222 100%)`; castBtn.style.color = `#888`;
             } else {
                 castBtn.style.color = `#111`; const maxStat = Math.max(s, r, l);
-                if (l + m === s && (l + m) >= 5 && r === 0) { State.spellType = 'SWARM'; predEl.innerText = "SWARM"; castBtn.style.background = `radial-gradient(circle, #ff0000 0%, #aa0000 100%)`; castBtn.style.boxShadow = `0 0 25px #ff0000`;
+                // Added Mana Aura Logic
+                if (m >= 1 && s === 0 && r === 0 && l === 0) { State.spellType = 'AURA'; predEl.innerText = "AURA"; castBtn.style.background = `radial-gradient(circle, #00e5ff 0%, #0088aa 100%)`; castBtn.style.boxShadow = `0 0 25px #00e5ff`;
+                } else if (l + m === s && (l + m) >= 5 && r === 0) { State.spellType = 'SWARM'; predEl.innerText = "SWARM"; castBtn.style.background = `radial-gradient(circle, #ff0000 0%, #aa0000 100%)`; castBtn.style.boxShadow = `0 0 25px #ff0000`;
                 } else if (s + m === r && (s + m) >= 5 && l === 0) { State.spellType = 'WAVE'; predEl.innerText = "WAVE"; castBtn.style.background = `radial-gradient(circle, #00aaff 0%, #0055aa 100%)`; castBtn.style.boxShadow = `0 0 25px #00aaff`;
                 } else if (r + m === l && (r + m) >= 5 && s === 0) { State.spellType = 'VORTEX'; predEl.innerText = "VORTEX"; castBtn.style.background = `radial-gradient(circle, #00ff00 0%, #00aa00 100%)`; castBtn.style.boxShadow = `0 0 25px #00ff00`;
                 } else if (s === 1 && m >= 5) { State.spellType = 'HEAL'; predEl.innerText = "HEAL"; castBtn.style.background = `radial-gradient(circle, #00ff55 0%, #008822 100%)`; castBtn.style.boxShadow = `0 0 25px #00ff55`;
@@ -459,7 +507,7 @@
 
         document.getElementById('btn-jump').addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); if(Physics.isGrounded) { Physics.velocityY = Physics.baseJumpForce + (PlayerStats.buffTimer>0 ? PlayerStats.lastMana*0.8 : 0); Physics.isGrounded = false; spawnParticles(playerGroup.position, 0xaaaaaa, 15, 6, 0.4); } });
 
-        const CHANTS = { PROJECTILE: ["Burn to ash!", "Strike true!"], SHIELD: ["Unbreakable aegis!", "Hold the line!"], ENHANCE: ["Time bends to my will!", "Accelerate!"], SUMMON: ["Arise and hunt!", "Legion, awaken!"], METEOR: ["Crush them to dust!", "Wrath of the sky!"], BEAM: ["Kamehameha!", "Erase!"], CLOUD: ["Freeze their bones!", "Storm eternal!"], HEAL: ["Mend the wounds!", "Life flows!"], TERRAIN: ["Rise from the deep!", "Earth obey!"], TITAN: ["Unmatched scale!", "Colossal power!"], SWARM: ["Thousand cuts!", "Pierce them all!"], WAVE: ["Get back!", "Repel!"], VORTEX: ["Consume all!", "Singularity!"] };
+        const CHANTS = { PROJECTILE: ["Burn to ash!", "Strike true!"], SHIELD: ["Unbreakable aegis!", "Hold the line!"], ENHANCE: ["Time bends to my will!", "Accelerate!"], SUMMON: ["Arise and hunt!", "Legion, awaken!"], METEOR: ["Crush them to dust!", "Wrath of the sky!"], BEAM: ["Kamehameha!", "Erase!"], CLOUD: ["Freeze their bones!", "Storm eternal!"], HEAL: ["Mend the wounds!", "Life flows!"], TERRAIN: ["Rise from the deep!", "Earth obey!"], TITAN: ["Unmatched scale!", "Colossal power!"], SWARM: ["Thousand cuts!", "Pierce them all!"], WAVE: ["Get back!", "Repel!"], VORTEX: ["Consume all!", "Singularity!"], AURA: ["Power overflowing!", "Limit break!"] };
         let activeChatBubble = null;
 
         function showChant(type) {
@@ -492,17 +540,51 @@
                 else if (type === 'SWARM') createSwarm(m, s, r, l, aimDir);
                 else if (type === 'WAVE') createWave(m, s, r, l, aimDir);
                 else if (type === 'VORTEX') createVortex(m, s, r, l, aimDir);
+                else if (type === 'AURA') createManaAura(m);
                 
                 shakeTime = 0.2; shakeIntensity = 0.4 + dScale(m) * 0.2;
                 const wPos = new THREE.Vector3(); staffOrb.getWorldPosition(wPos);
                 let castColor = COLORS.cast; if(COLORS[type.toLowerCase()]) castColor = COLORS[type.toLowerCase()];
                 if(type === 'PROJECTILE' && s>=10) castColor = 0xffffff;
+                if(type === 'AURA') castColor = PlayerStats.activeAura.color;
                 spawnParticles(wPos, castColor, 25, 15, 0.6);
             }, 500);
             State.mana = 0; State.sharp = 0; State.round = 0; State.line = 0; updateUI();
         });
 
         // --- ABILITIES ---
+        function createManaAura(mana) {
+            if(PlayerStats.activeAura && PlayerStats.activeAura.mesh) { playerGroup.remove(PlayerStats.activeAura.mesh); }
+            let color = 0x00e5ff;
+            if(mana >= 50) color = 0x000044; else if(mana >= 30) color = 0x003388; else if(mana >= 20) color = 0x0066aa; else if(mana >= 10) color = 0x00aadd;
+
+            const mesh = new THREE.Mesh(new THREE.SphereGeometry(3.5, 32, 16), new THREE.MeshBasicMaterial({color: color, transparent: true, opacity: 0.5, blending: THREE.NormalBlending, wireframe: true}));
+            playerGroup.add(mesh); mesh.position.y = 2.0;
+            
+            const duration = Math.min(60, 5 + mana * 2);
+            PlayerStats.activeAura = { mesh: mesh, life: duration, maxLife: duration, color: color };
+            flashScreen('#' + new THREE.Color(color).getHexString());
+        }
+
+        function createEnemyBeam(startPos, aimDir, damage, duration) {
+            const thickness = 1.0; const length = 150; const grp = new THREE.Group();
+            
+            const beamMesh = new THREE.Mesh(GeoCache.coreBeam, new THREE.MeshBasicMaterial({color: 0x00ffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
+            beamMesh.scale.set(thickness, 1, thickness); grp.add(beamMesh);
+            
+            const spirals = new THREE.Group();
+            for(let i=0; i<4; i++) {
+                const sp = new THREE.Mesh(new THREE.CylinderGeometry(thickness*0.3, thickness*0.3, 1, 8).translate(thickness*1.8, 0.5, 0).rotateX(Math.PI/2), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
+                sp.rotation.z = (Math.PI/2) * i; spirals.add(sp);
+            } grp.add(spirals);
+            
+            const muzzle = new THREE.Mesh(GeoCache.muzzleSphere, new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
+            muzzle.scale.setScalar(thickness*2.5); grp.add(muzzle);
+
+            grp.position.copy(startPos); grp.lookAt(startPos.clone().add(aimDir)); scene.add(grp);
+            spells.push({ type: 'enemy_beam', mesh: grp, beamCore: beamMesh, spirals: spirals, muzzle: muzzle, dir: aimDir, maxLen: length, damage: damage, life: duration, maxLife: duration });
+        }
+
         function createProjectile(mana, sharp, round, line, aimDir) {
             const grp = new THREE.Group(); const size = 0.6 + dScale(mana) * 0.2; 
             grp.add(new THREE.Mesh(new THREE.IcosahedronGeometry(size, 1), new THREE.MeshBasicMaterial({ color: 0xffffff })));
@@ -554,22 +636,20 @@
             const B = line + sharp; const length = 50 + dScale(B) * 15; const thickness = 0.5 + dScale(mana) * 0.8;
             const grp = new THREE.Group(); const startPos = new THREE.Vector3(); staffOrb.getWorldPosition(startPos);
             
-            const beamGeo = new THREE.CylinderGeometry(thickness, thickness, 1, 16); beamGeo.translate(0, 0.5, 0); beamGeo.rotateX(Math.PI/2);
-            const beamMesh = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({color: COLORS.beam, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending})); grp.add(beamMesh);
+            const beamMesh = new THREE.Mesh(GeoCache.coreBeam, new THREE.MeshBasicMaterial({color: COLORS.beam, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
+            beamMesh.scale.set(thickness, 1, thickness); grp.add(beamMesh);
             
-            const spirals = new THREE.Group();
-            for(let i=0; i<4; i++) {
-                const sp = new THREE.Mesh(new THREE.CylinderGeometry(thickness*0.3, thickness*0.3, 1, 8).translate(thickness*1.8, 0.5, 0).rotateX(Math.PI/2), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
-                sp.rotation.z = (Math.PI/2) * i;
-                spirals.add(sp);
-            }
-            grp.add(spirals);
+            const aura1 = new THREE.Mesh(GeoCache.auraLayer1, new THREE.MeshBasicMaterial({color: 0xffffff, wireframe: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending}));
+            aura1.scale.set(thickness*1.6, 1, thickness*1.6); grp.add(aura1);
+
+            const aura2 = new THREE.Mesh(GeoCache.auraLayer2, new THREE.MeshBasicMaterial({color: 0x0088aa, wireframe: true, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending}));
+            aura2.scale.set(thickness*2.2, 1, thickness*2.2); grp.add(aura2);
             
-            const muzzle = new THREE.Mesh(new THREE.SphereGeometry(thickness*2.5, 16, 16), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
-            grp.add(muzzle);
+            const muzzle = new THREE.Mesh(GeoCache.muzzleSphere, new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending}));
+            muzzle.scale.setScalar(thickness*2.5); grp.add(muzzle);
 
             grp.position.copy(startPos); grp.lookAt(startPos.clone().add(aimDir)); scene.add(grp);
-            spells.push({ type: 'beam', mesh: grp, beamCore: beamMesh, spirals: spirals, muzzle: muzzle, dir: aimDir, maxLen: length, damage: 10 + dScale(mana)*5, life: 1.0 + dScale(B) * 0.3, maxLife: 1.0 + dScale(B) * 0.3 });
+            spells.push({ type: 'beam', mesh: grp, beamCore: beamMesh, auras: [aura1, aura2], muzzle: muzzle, dir: aimDir, maxLen: length, damage: 10 + dScale(mana)*5, life: 1.0 + dScale(B) * 0.3, maxLife: 1.0 + dScale(B) * 0.3 });
             flashScreen(COLORS.beam); shakeTime = 1.0 + B*0.1; shakeIntensity = 0.5 + dScale(mana)*0.2;
         }
 
@@ -702,64 +782,59 @@
             }
         }
 
-        const clock = new THREE.Clock(); let shakeTime = 0; let shakeIntensity = 0; let walkCycle = 0; let ghostTimer = 0; const camTargetPos = new THREE.Vector3();
-
-        function animate() {
-            requestAnimationFrame(animate); const rawDt = Math.min(clock.getDelta(), 0.05); const time = clock.getElapsedTime(); const dt = rawDt * globalTimeScale;
-
-            skyGroup.rotation.y = time * 0.04 * globalTimeScale; wisps.forEach(w => { w.position.y = w.userData.originY + Math.sin(time*w.userData.speed + w.userData.offset)*2; }); staffOrb.position.y = 5.7 + Math.sin(time * 8) * 0.2;
-            
-            bees.forEach((b, i) => { 
-                b.position.y = b.userData.originY + Math.sin(time*b.userData.speed + b.userData.offset)*1.5; 
-                b.rotation.y += dt*b.userData.speed;
-                if(Math.random() < 0.01) { b.userData.target.set(-450 + (Math.random()-0.5)*300, 10, (Math.random()-0.5)*600); }
-                b.position.lerp(b.userData.target, 0.02 * dt * b.userData.speed);
-            });
-
-            if(PlayerStats.titanTimer > 0) { PlayerStats.titanTimer -= rawDt; playerGroup.scale.lerp(new THREE.Vector3(PlayerStats.titanMult, PlayerStats.titanMult, PlayerStats.titanMult), 0.1); playerRadius = 1.5 * playerGroup.scale.x; } else { playerGroup.scale.lerp(new THREE.Vector3(1,1,1), 0.1); playerRadius = 1.5; }
-
-            if(PlayerStats.healTimer > 0) { PlayerStats.healTimer -= rawDt; const healAmt = PlayerStats.healRate * rawDt; PlayerStats.hp = Math.min(PlayerStats.maxHp, PlayerStats.hp + healAmt); updateUI(); if(Math.random() < 0.1) spawnParticles(playerGroup.position, COLORS.heal, 1, 5, 0.5); if(PlayerStats.healTimer <= 0) showDamageText(PlayerStats.healRate * (5 + dScale(State.lastMana)*3), playerGroup.position, false, true); }
-
-            if(activeChatBubble) { activeChatBubble.life -= rawDt; if(activeChatBubble.life <= 0) { activeChatBubble.el.style.opacity = '0'; setTimeout(()=> { if(activeChatBubble) activeChatBubble.el.remove(); activeChatBubble = null; }, 200); } else { activeChatBubble.el.style.opacity = '1'; const pos = playerGroup.position.clone(); pos.y += 6 * playerGroup.scale.y; pos.project(camera); const cx = (pos.x * 0.5 + 0.5) * window.innerWidth; const cy = (pos.y * -0.5 + 0.5) * window.innerHeight; activeChatBubble.el.style.transform = `translate(-50%, -100%) translate(${cx}px, ${cy}px)`; } }
-
-            let targetGroundY = getMapHeight(playerGroup.position.x, playerGroup.position.z);
-            Physics.velocityY -= Physics.gravity * rawDt; playerGroup.position.y += Physics.velocityY * rawDt;
+        // --- EXTRACTED UPDATE FUNCTIONS ---
+        function updatePlayerMovement(dt, rawDt, time, targetGroundY) {
+            // Re-written to decouple input from actual movement velocity (momentum retention)
+            Physics.velocityY -= Physics.gravity * rawDt; 
+            playerGroup.position.y += Physics.velocityY * rawDt;
             if (playerGroup.position.y <= targetGroundY) { playerGroup.position.y = targetGroundY; Physics.velocityY = 0; Physics.isGrounded = true; }
 
-            if (moveVector.x !== 0 || moveVector.y !== 0) {
-                const airFactor = Physics.isGrounded ? 1.0 : (PlayerStats.buffTimer > 0 ? 0.7 : 0.3); 
-                const iceFactor = PlayerStats.frostTimer > 0 ? 0.4 : 1.0;
-                const speed = PlayerStats.baseSpeed * PlayerStats.speedMultiplier * airFactor * iceFactor * rawDt;
-                const worldDirX = moveVector.x * Math.cos(camYaw) + moveVector.y * Math.sin(camYaw); const worldDirZ = -moveVector.x * Math.sin(camYaw) + moveVector.y * Math.cos(camYaw);
-                let nextX = playerGroup.position.x + worldDirX * speed; let nextZ = playerGroup.position.z + worldDirZ * speed;
-                for(let obs of obstacles) {
-                    if(obs.isTerrainGroup || (obs.mesh && obs.mesh.userData && obs.mesh.userData.hp <= 0)) continue; 
-                    let dx = nextX - obs.x; let dz = nextZ - obs.z; let distSq = dx*dx + dz*dz; let minDist = playerRadius + obs.r;
-                    if(distSq < minDist * minDist) { let dist = Math.sqrt(distSq); if(dist === 0) { dx=1; dist=1; } let overlap = minDist - dist; nextX += (dx/dist) * overlap; nextZ += (dz/dist) * overlap; }
-                }
-                playerGroup.position.x = nextX; playerGroup.position.z = nextZ;
-                const targetAngle = Math.atan2(worldDirX, worldDirZ); let angleDiff = targetAngle - playerGroup.rotation.y; angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff)); playerGroup.rotation.y += angleDiff * 15 * rawDt;
-                if (Physics.isGrounded) { walkCycle += rawDt * 20 * PlayerStats.speedMultiplier * iceFactor; robe.rotation.z = Math.sin(walkCycle * 0.6) * 0.15; }
-                if (PlayerStats.isHighEnhance) { ghostTimer -= rawDt; if(ghostTimer <= 0) { ghostTimer = 0.1; const ghost = createPlayerModel(true); ghost.grp.position.copy(playerGroup.position); ghost.grp.rotation.copy(playerGroup.rotation); ghost.grp.scale.copy(playerGroup.scale); scene.add(ghost.grp); ghosts.push({mesh: ghost.grp, life: 0.5, maxLife: 0.5}); } }
-            } else { robe.rotation.z = THREE.MathUtils.lerp(robe.rotation.z, 0, 0.15); }
+            const iceFactor = PlayerStats.frostTimer > 0 ? 0.4 : 1.0;
+            const targetSpeed = PlayerStats.baseSpeed * PlayerStats.speedMultiplier * iceFactor;
+            
+            const worldDirX = moveVector.x * Math.cos(camYaw) + moveVector.y * Math.sin(camYaw); 
+            const worldDirZ = -moveVector.x * Math.sin(camYaw) + moveVector.y * Math.cos(camYaw);
+            
+            const targetVX = worldDirX * targetSpeed;
+            const targetVZ = worldDirZ * targetSpeed;
 
-            if (PlayerStats.buffTimer > 0) { PlayerStats.buffTimer -= rawDt; if (PlayerStats.buffTimer <= 0) { PlayerStats.speedMultiplier = 1.0; PlayerStats.isHighEnhance = false; globalTimeScale = 1.0; document.getElementById('time-filter').style.opacity = '0'; } }
-            if (PlayerStats.frostTimer > 0) { PlayerStats.frostTimer -= rawDt; robe.material.color.setHex(0x88ccff); } else { robe.material.color.setHex(0x151525); }
+            // Physics momentum: Fast adaptation on ground, slow drift in air
+            const accel = Physics.isGrounded ? 15 : 2;
+            Physics.velX = THREE.MathUtils.lerp(Physics.velX, targetVX, accel * rawDt);
+            Physics.velZ = THREE.MathUtils.lerp(Physics.velZ, targetVZ, accel * rawDt);
 
-            for(let i=obstacles.length-1; i>=0; i--) {
-                const obs = obstacles[i];
-                if(obs.isTerrainGroup) {
-                    obs.life -= rawDt;
-                    obs.chunks.forEach(c => { 
-                        if(c.mesh.position.y < c.targetY) { c.mesh.position.y += rawDt * 15; c.mesh.position.x += (Math.random()-0.5)*0.2; c.mesh.position.z += (Math.random()-0.5)*0.2; }
-                    });
-                    if(obs.life <= 0) {
-                        obs.chunks.forEach(c => { spawnParticles(c.mesh.position, COLORS.terrain, 5, 10, 0.5, 1.5, true); scene.remove(c.mesh); const ccIdx = cameraColliders.indexOf(c.mesh); if(ccIdx>-1) cameraColliders.splice(ccIdx, 1); });
-                        obstacles.splice(i, 1);
-                    }
-                }
+            let nextX = playerGroup.position.x + Physics.velX * rawDt; 
+            let nextZ = playerGroup.position.z + Physics.velZ * rawDt;
+            
+            for(let obs of obstacles) {
+                if(obs.isTerrainGroup || (obs.mesh && obs.mesh.userData && obs.mesh.userData.hp <= 0)) continue; 
+                let dx = nextX - obs.x; let dz = nextZ - obs.z; let distSq = dx*dx + dz*dz; let minDist = playerRadius + obs.r;
+                if(distSq < minDist * minDist) { let dist = Math.sqrt(distSq); if(dist === 0) { dx=1; dist=1; } let overlap = minDist - dist; nextX += (dx/dist) * overlap; nextZ += (dz/dist) * overlap; }
+            }
+            playerGroup.position.x = nextX; playerGroup.position.z = nextZ;
+            
+            if(Math.abs(Physics.velX) > 0.1 || Math.abs(Physics.velZ) > 0.1) {
+                const targetAngle = Math.atan2(Physics.velX, Physics.velZ); 
+                let angleDiff = targetAngle - playerGroup.rotation.y; 
+                angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff)); 
+                playerGroup.rotation.y += angleDiff * 15 * rawDt;
             }
 
+            if (Physics.isGrounded && (moveVector.x !== 0 || moveVector.y !== 0)) { walkCycle += rawDt * 20 * PlayerStats.speedMultiplier * iceFactor; robe.rotation.z = Math.sin(walkCycle * 0.6) * 0.15; }
+            else { robe.rotation.z = THREE.MathUtils.lerp(robe.rotation.z, 0, 0.15); }
+            
+            if (PlayerStats.isHighEnhance && (moveVector.x !== 0 || moveVector.y !== 0)) { ghostTimer -= rawDt; if(ghostTimer <= 0) { ghostTimer = 0.1; const ghost = createPlayerModel(true); ghost.grp.position.copy(playerGroup.position); ghost.grp.rotation.copy(playerGroup.rotation); ghost.grp.scale.copy(playerGroup.scale); scene.add(ghost.grp); ghosts.push({mesh: ghost.grp, life: 0.5, maxLife: 0.5}); } }
+
+            // Update Mana Aura Rotation
+            if (PlayerStats.activeAura && PlayerStats.activeAura.life > 0) {
+                PlayerStats.activeAura.life -= rawDt;
+                PlayerStats.activeAura.mesh.rotation.y += 2 * rawDt;
+                PlayerStats.activeAura.mesh.rotation.z += 1 * rawDt;
+                if (PlayerStats.activeAura.life <= 0) { playerGroup.remove(PlayerStats.activeAura.mesh); PlayerStats.activeAura = null; }
+            }
+        }
+
+        function updateSpells(dt, time) {
             for (let i = spells.length - 1; i >= 0; i--) {
                 const sp = spells[i]; sp.life -= dt;
                 if (sp.type === 'projectile' || sp.type === 'enemy_rock' || sp.type === 'frost_proj' || sp.type === 'swarm') {
@@ -802,7 +877,7 @@
                     let groundH = getMapHeight(sp.mesh.position.x, sp.mesh.position.z);
                     if (sp.mesh.position.y <= groundH + 1.0) { triggerExplosion(sp.mesh.position, sp.mana, sp.sharp, true); scene.remove(sp.mesh); spells.splice(i, 1); }
                 }
-                else if (sp.type === 'beam') {
+                else if (sp.type === 'beam' || sp.type === 'enemy_beam') {
                     const t = sp.life/sp.maxLife; 
                     sp.beamCore.material.opacity = t; 
                     sp.spirals.children.forEach(c => c.material.opacity = t*0.8);
@@ -813,14 +888,24 @@
 
                     let currentLen = sp.maxLen; beamRaycaster.set(sp.mesh.position, sp.dir);
                     const intersects = beamRaycaster.intersectObjects(cameraColliders, true); if(intersects.length > 0 && intersects[0].distance < currentLen) { currentLen = intersects[0].distance; }
-                    const dmgIntersects = beamRaycaster.intersectObjects(damageableColliders, false); if(dmgIntersects.length > 0 && dmgIntersects[0].distance < currentLen) { currentLen = dmgIntersects[0].distance; let hitDummy = dummies.find(d => d.children.includes(dmgIntersects[0].object)); if(hitDummy) applyDamage(hitDummy, sp.damage * dt * 60); }
+                    
+                    if (sp.type === 'beam') {
+                        const dmgIntersects = beamRaycaster.intersectObjects(damageableColliders, false); if(dmgIntersects.length > 0 && dmgIntersects[0].distance < currentLen) { currentLen = dmgIntersects[0].distance; let hitDummy = dummies.find(d => d.children.includes(dmgIntersects[0].object)); if(hitDummy) applyDamage(hitDummy, sp.damage * dt * 60); }
+                    } else if (sp.type === 'enemy_beam') {
+                        const pDist = new THREE.Vector3().subVectors(playerGroup.position, sp.mesh.position);
+                        const proj = pDist.dot(sp.dir);
+                        if (proj > 0 && proj < currentLen) {
+                            const closestP = sp.mesh.position.clone().add(sp.dir.clone().multiplyScalar(proj));
+                            if (closestP.distanceTo(playerGroup.position) < playerRadius + 1.5) { applyDamageToPlayer(sp.damage * dt * 60); }
+                        }
+                    }
                     
                     sp.beamCore.scale.z = currentLen; 
                     sp.spirals.scale.z = currentLen; 
                     
                     if(currentLen < sp.maxLen) { 
                         const hitPos = sp.mesh.position.clone().add(sp.dir.clone().multiplyScalar(currentLen)); 
-                        spawnParticles(hitPos, COLORS.beam, 4, 15, 0.2, 2.0); 
+                        spawnParticles(hitPos, sp.type==='beam'?COLORS.beam:0x00ffff, 4, 15, 0.2, 2.0); 
                         if (Math.random() < 0.3) {
                             const flash = new THREE.Mesh(new THREE.IcosahedronGeometry(Math.random()*3+1, 0), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending}));
                             flash.position.copy(hitPos); flash.rotation.set(Math.random(), Math.random(), Math.random());
@@ -877,7 +962,160 @@
                     } else { sp.core.material.opacity = Math.min(1.0, sp.life / 0.5); }
                 }
             }
+        }
 
+        function updateGolems(dt, time) {
+            dummies.forEach(d => {
+                const hpBar = d.userData.hpBar; if(hpBar) { hpBar.fg.scale.x = Math.max(0.01, d.userData.hp / d.userData.maxHp); hpBar.grp.lookAt(camera.position); }
+                if(d.userData.freezeTimer > 0) { d.userData.freezeTimer -= dt; d.traverse(c => { if(c.isMesh && c.material) c.material.color.setHex(0x88ccff); }); } 
+                else {
+                    d.userData.rune.rotation.z -= dt * 3.0; 
+                    if(d.userData.isGolem) {
+                        d.userData.aiTimer -= dt;
+                        let state = 'idle';
+                        let distToPlayer = d.position.distanceTo(playerGroup.position);
+                        let isAggro = d.userData.isAwake; 
+
+                        if (d.userData.hitAnim > 0) {
+                            state = 'hit'; d.userData.hitAnim -= dt;
+                        } else if (d.userData.attackAnim > 0) {
+                            state = 'attack'; d.userData.attackAnim -= dt;
+                            if(d.userData.golemType === 3) {
+                                // Goku beam attack logic
+                                if(d.userData.attackAnim > 1.0) {
+                                    if(Math.random() < 0.4) spawnParticles(new THREE.Vector3(d.position.x, d.position.y+15, d.position.z), 0x00ffff, 2, 5, 0.2);
+                                    d.lookAt(playerGroup.position.x, d.position.y, playerGroup.position.z);
+                                }
+                                if(d.userData.attackAnim <= 1.0 && !d.userData.hasAttacked) {
+                                    d.userData.hasAttacked = true;
+                                    const firePos = new THREE.Vector3(d.position.x, d.position.y+15, d.position.z);
+                                    const fireDir = playerGroup.position.clone().sub(firePos).normalize();
+                                    createEnemyBeam(firePos, fireDir, 1.5, 1.0);
+                                    shakeTime = 0.5; shakeIntensity = 0.6;
+                                }
+                            } else {
+                                if(d.userData.attackAnim <= 0.5 && !d.userData.hasAttacked) {
+                                    d.userData.hasAttacked = true;
+                                    if (d.userData.golemType === 0 && distToPlayer < 25) {
+                                        applyDamageToPlayer(25);
+                                        let kb = playerGroup.position.clone().sub(d.position).normalize();
+                                        Physics.velocityY = 25;
+                                        playerGroup.position.addScaledVector(kb, 15);
+                                        shakeTime = 0.3; shakeIntensity = 1.0; flashScreen('#ff0000');
+                                    } else if (d.userData.golemType === 1) { spawnEnemyRock(new THREE.Vector3(d.position.x, d.position.y + 15, d.position.z), playerGroup.position);
+                                    } else if (d.userData.golemType === 2) { spawnFrostProj(new THREE.Vector3(d.position.x, d.position.y + 15, d.position.z), playerGroup.position); }
+                                }
+                            }
+                        } else if (isAggro) {
+                            d.userData.targetPos.copy(playerGroup.position);
+                            let attackRange = d.userData.golemType === 0 ? 19 : (d.userData.golemType === 1 ? 69 : (d.userData.golemType === 3 ? 120 : 94));
+                            if (distToPlayer > attackRange) {
+                                state = 'walk';
+                                const dir = d.userData.targetPos.clone().sub(d.position).normalize(); dir.y = 0;
+                                let speed = d.userData.golemType === 0 ? 12 : (d.userData.golemType === 1 ? 16 : (d.userData.golemType === 3 ? 35 : 14));
+                                d.position.addScaledVector(dir, speed * dt);
+                                d.rotation.y = Math.atan2(dir.x, dir.z);
+                            } else { 
+                                d.userData.attackAnim = d.userData.golemType === 3 ? 2.5 : 1.0; 
+                                d.userData.hasAttacked = false; 
+                            }
+                        } else {
+                            if(d.userData.aiTimer <= 0) { d.userData.aiTimer = 3.0 + Math.random()*3; if(Math.random() > 0.4) d.userData.targetPos.set(d.position.x + (Math.random()-0.5)*40, 0, d.position.z + (Math.random()-0.5)*40); }
+                            if (d.position.distanceTo(d.userData.targetPos) > 2 && d.position.distanceTo(d.userData.targetPos) < 100) {
+                                state = 'walk'; const dir = d.userData.targetPos.clone().sub(d.position).normalize(); dir.y = 0;
+                                d.position.addScaledVector(dir, 8 * dt); d.rotation.y = Math.atan2(dir.x, dir.z);
+                            }
+                        }
+
+                        d.position.y = getMapHeight(d.position.x, d.position.z);
+
+                        let aniTime = time * (state === 'walk' ? (isAggro ? 8 : 4) : 0);
+                        const limbs = d.userData.limbs;
+                        if (state === 'walk') {
+                            limbs.lArm.rotation.x = Math.sin(aniTime) * 0.6; limbs.rArm.rotation.x = -Math.sin(aniTime) * 0.6;
+                            limbs.lLeg.rotation.x = -Math.sin(aniTime) * 0.6; limbs.rLeg.rotation.x = Math.sin(aniTime) * 0.6;
+                            if(limbs.torso) limbs.torso.rotation.x = 0;
+                            if (d.userData.golemType === 1 && Math.random() < 0.2) spawnParticles(d.position, 0xd2b48c, 1, 3, 0.5, 1, true);
+                            if (d.userData.golemType === 2 && Math.random() < 0.1) spawnParticles(d.position, 0x44ffff, 1, 2, 0.6);
+                            if (d.userData.golemType === 3 && isAggro && Math.random() < 0.3) spawnParticles(d.position, 0xffaa00, 1, 2, 0.2);
+                        } else if (state === 'attack') {
+                            let prog = 1.0 - d.userData.attackAnim;
+                            if (d.userData.golemType === 0) { limbs.rArm.rotation.x = prog < 0.5 ? -Math.PI : THREE.MathUtils.lerp(limbs.rArm.rotation.x, Math.PI/4, 0.3); } 
+                            else if (d.userData.golemType === 3) {
+                                if (d.userData.attackAnim > 1.0) { limbs.rArm.rotation.x = -Math.PI/4; limbs.lArm.rotation.x = -Math.PI/4; limbs.torso.rotation.y = Math.sin(time*20)*0.1; }
+                                else { limbs.rArm.rotation.x = -Math.PI/2; limbs.lArm.rotation.x = -Math.PI/2; limbs.torso.rotation.y = 0; }
+                            }
+                            else { limbs.rArm.rotation.x = prog < 0.5 ? -Math.PI/2 : THREE.MathUtils.lerp(limbs.rArm.rotation.x, Math.PI/4, 0.2); limbs.lArm.rotation.x = prog < 0.5 ? -Math.PI/2 : THREE.MathUtils.lerp(limbs.lArm.rotation.x, Math.PI/4, 0.2); }
+                            limbs.lLeg.rotation.x = 0; limbs.rLeg.rotation.x = 0;
+                        } else if (state === 'hit') { if(limbs.torso) limbs.torso.rotation.x = -0.2; } 
+                        else {
+                            limbs.lArm.rotation.x = Math.sin(time*2)*0.1; limbs.rArm.rotation.x = -Math.sin(time*2)*0.1;
+                            limbs.lLeg.rotation.x = 0; limbs.rLeg.rotation.x = 0; if(limbs.torso) limbs.torso.rotation.x = 0;
+                            if (d.userData.golemType === 2 && Math.random() < 0.05) spawnParticles(d.position, 0x44ffff, 1, 2, 0.6);
+                        }
+                    }
+
+                    if (d.userData.flashTimer > 0) { d.userData.flashTimer -= dt; if (d.userData.flashTimer <= 0) { d.traverse(c => { if(c.isMesh && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); } } else { d.traverse(c => { if(c.isMesh && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); }
+                }
+            });
+        }
+
+        function updateParticles(dt, rawDt) {
+            for (let i = activeParticles.length - 1; i >= 0; i--) {
+                const p = activeParticles[i]; p.life -= dt;
+                if (p.life <= 0) { scene.remove(p.mesh); activeParticles.splice(i, 1); } 
+                else {
+                    if (p.isFlash) { p.mesh.scale.setScalar(1 + (1 - p.life/p.maxLife)*0.5); p.mesh.material.opacity = p.life/p.maxLife; }
+                    else if (p.isVolume) { const s = 1 + (1 - p.life/p.maxLife) * p.maxScale; p.mesh.scale.setScalar(s); p.mesh.material.opacity = (p.life/p.maxLife) * 0.7; }
+                    else if (p.isWave) { const s = 1 + (1 - p.life/p.maxLife) * p.maxScale; p.mesh.scale.set(s, s, s); p.mesh.material.opacity = p.life/p.maxLife; } 
+                    else if (p.isBolt) { p.mesh.material.opacity = p.life/p.maxLife; }
+                    else { if(p.isSmoke) { p.vel.y += rawDt * 10; } else { p.vel.y -= rawDt * 15; } p.mesh.position.addScaledVector(p.vel, dt); p.mesh.material.opacity = p.life / p.maxLife; p.mesh.scale.setScalar(p.life / p.maxLife * 1.5); p.mesh.rotation.x += p.rotSpeed.x * dt * 20; p.mesh.rotation.y += p.rotSpeed.y * dt * 20; }
+                }
+            }
+        }
+
+        const clock = new THREE.Clock(); let shakeTime = 0; let shakeIntensity = 0; let walkCycle = 0; let ghostTimer = 0; const camTargetPos = new THREE.Vector3();
+
+        function animate() {
+            requestAnimationFrame(animate); const rawDt = Math.min(clock.getDelta(), 0.05); const time = clock.getElapsedTime(); const dt = rawDt * globalTimeScale;
+
+            skyGroup.rotation.y = time * 0.04 * globalTimeScale; wisps.forEach(w => { w.position.y = w.userData.originY + Math.sin(time*w.userData.speed + w.userData.offset)*2; }); staffOrb.position.y = 5.7 + Math.sin(time * 8) * 0.2;
+            
+            bees.forEach((b, i) => { 
+                b.position.y = b.userData.originY + Math.sin(time*b.userData.speed + b.userData.offset)*1.5; 
+                b.rotation.y += dt*b.userData.speed;
+                if(Math.random() < 0.01) { b.userData.target.set(-450 + (Math.random()-0.5)*300, 10, (Math.random()-0.5)*600); }
+                b.position.lerp(b.userData.target, 0.02 * dt * b.userData.speed);
+            });
+
+            if(PlayerStats.titanTimer > 0) { PlayerStats.titanTimer -= rawDt; playerGroup.scale.lerp(new THREE.Vector3(PlayerStats.titanMult, PlayerStats.titanMult, PlayerStats.titanMult), 0.1); playerRadius = 1.5 * playerGroup.scale.x; } else { playerGroup.scale.lerp(new THREE.Vector3(1,1,1), 0.1); playerRadius = 1.5; }
+
+            if(PlayerStats.healTimer > 0) { PlayerStats.healTimer -= rawDt; const healAmt = PlayerStats.healRate * rawDt; PlayerStats.hp = Math.min(PlayerStats.maxHp, PlayerStats.hp + healAmt); updateUI(); if(Math.random() < 0.1) spawnParticles(playerGroup.position, COLORS.heal, 1, 5, 0.5); if(PlayerStats.healTimer <= 0) showDamageText(PlayerStats.healRate * (5 + dScale(State.lastMana)*3), playerGroup.position, false, true); }
+
+            if(activeChatBubble) { activeChatBubble.life -= rawDt; if(activeChatBubble.life <= 0) { activeChatBubble.el.style.opacity = '0'; setTimeout(()=> { if(activeChatBubble) activeChatBubble.el.remove(); activeChatBubble = null; }, 200); } else { activeChatBubble.el.style.opacity = '1'; const pos = playerGroup.position.clone(); pos.y += 6 * playerGroup.scale.y; pos.project(camera); const cx = (pos.x * 0.5 + 0.5) * window.innerWidth; const cy = (pos.y * -0.5 + 0.5) * window.innerHeight; activeChatBubble.el.style.transform = `translate(-50%, -100%) translate(${cx}px, ${cy}px)`; } }
+
+            let targetGroundY = getMapHeight(playerGroup.position.x, playerGroup.position.z);
+            updatePlayerMovement(dt, rawDt, time, targetGroundY);
+
+            if (PlayerStats.buffTimer > 0) { PlayerStats.buffTimer -= rawDt; if (PlayerStats.buffTimer <= 0) { PlayerStats.speedMultiplier = 1.0; PlayerStats.isHighEnhance = false; globalTimeScale = 1.0; document.getElementById('time-filter').style.opacity = '0'; } }
+            if (PlayerStats.frostTimer > 0) { PlayerStats.frostTimer -= rawDt; robe.material.color.setHex(0x88ccff); } else { robe.material.color.setHex(0x151525); }
+
+            for(let i=obstacles.length-1; i>=0; i--) {
+                const obs = obstacles[i];
+                if(obs.isTerrainGroup) {
+                    obs.life -= rawDt;
+                    obs.chunks.forEach(c => { 
+                        if(c.mesh.position.y < c.targetY) { c.mesh.position.y += rawDt * 15; c.mesh.position.x += (Math.random()-0.5)*0.2; c.mesh.position.z += (Math.random()-0.5)*0.2; }
+                    });
+                    if(obs.life <= 0) {
+                        obs.chunks.forEach(c => { spawnParticles(c.mesh.position, COLORS.terrain, 5, 10, 0.5, 1.5, true); scene.remove(c.mesh); const ccIdx = cameraColliders.indexOf(c.mesh); if(ccIdx>-1) cameraColliders.splice(ccIdx, 1); });
+                        obstacles.splice(i, 1);
+                    }
+                }
+            }
+
+            updateSpells(dt, time);
+            
             for(let i = clouds.length - 1; i >= 0; i--) {
                 const c = clouds[i]; c.life -= dt; if (c.life <= 0) { scene.remove(c.mesh); clouds.splice(i, 1); continue; }
                 c.mesh.position.y = playerGroup.position.y + 10*playerGroup.scale.y + Math.sin(time * 2) * 2;
@@ -894,89 +1132,9 @@
                 if(sm.target) { const dir = sm.target.position.clone().sub(sm.mesh.position); dir.y = 0; const dist = dir.length(); if(dist > sm.target.userData.r + 1.0) { dir.normalize(); sm.mesh.position.addScaledVector(dir, sm.speed * dt); sm.mesh.rotation.y = Math.atan2(dir.x, dir.z); sm.mesh.position.y = getMapHeight(sm.mesh.position.x, sm.mesh.position.z); } else { sm.attackTimer -= dt; if(sm.attackTimer <= 0) { sm.attackTimer = 0.5; applyDamage(sm.target, sm.damage); spawnParticles(sm.target.position, COLORS.line, 5, 5, 0.3); } } }
             }
 
-            dummies.forEach(d => {
-                const hpBar = d.userData.hpBar; if(hpBar) { hpBar.fg.scale.x = Math.max(0.01, d.userData.hp / d.userData.maxHp); hpBar.grp.lookAt(camera.position); }
-                if(d.userData.freezeTimer > 0) { d.userData.freezeTimer -= dt; d.traverse(c => { if(c.isMesh) c.material.color.setHex(0x88ccff); }); } 
-                else {
-                    d.userData.rune.rotation.z -= dt * 3.0; 
-                    if(d.userData.isGolem) {
-                        d.userData.aiTimer -= dt;
-                        let state = 'idle';
-                        let distToPlayer = d.position.distanceTo(playerGroup.position);
-                        let isAggro = d.userData.isAwake; 
-
-                        if (d.userData.hitAnim > 0) {
-                            state = 'hit'; d.userData.hitAnim -= dt;
-                        } else if (d.userData.attackAnim > 0) {
-                            state = 'attack'; d.userData.attackAnim -= dt;
-                            if(d.userData.attackAnim <= 0.5 && !d.userData.hasAttacked) {
-                                d.userData.hasAttacked = true;
-                                if (d.userData.golemType === 0 && distToPlayer < 25) {
-                                    applyDamageToPlayer(25);
-                                    let kb = playerGroup.position.clone().sub(d.position).normalize();
-                                    Physics.velocityY = 25;
-                                    playerGroup.position.addScaledVector(kb, 15);
-                                    shakeTime = 0.3; shakeIntensity = 1.0; flashScreen('#ff0000');
-                                } else if (d.userData.golemType === 1) { spawnEnemyRock(new THREE.Vector3(d.position.x, d.position.y + 15, d.position.z), playerGroup.position);
-                                } else if (d.userData.golemType === 2) { spawnFrostProj(new THREE.Vector3(d.position.x, d.position.y + 15, d.position.z), playerGroup.position); }
-                            }
-                        } else if (isAggro) {
-                            d.userData.targetPos.copy(playerGroup.position);
-                            let attackRange = d.userData.golemType === 0 ? 19 : (d.userData.golemType === 1 ? 69 : 94);
-                            if (distToPlayer > attackRange) {
-                                state = 'walk';
-                                const dir = d.userData.targetPos.clone().sub(d.position).normalize(); dir.y = 0;
-                                let speed = d.userData.golemType === 0 ? 12 : (d.userData.golemType === 1 ? 16 : 14);
-                                d.position.addScaledVector(dir, speed * dt);
-                                d.rotation.y = Math.atan2(dir.x, dir.z);
-                            } else { d.userData.attackAnim = 1.0; d.userData.hasAttacked = false; }
-                        } else {
-                            if(d.userData.aiTimer <= 0) { d.userData.aiTimer = 3.0 + Math.random()*3; if(Math.random() > 0.4) d.userData.targetPos.set(d.position.x + (Math.random()-0.5)*40, 0, d.position.z + (Math.random()-0.5)*40); }
-                            if (d.position.distanceTo(d.userData.targetPos) > 2 && d.position.distanceTo(d.userData.targetPos) < 100) {
-                                state = 'walk'; const dir = d.userData.targetPos.clone().sub(d.position).normalize(); dir.y = 0;
-                                d.position.addScaledVector(dir, 8 * dt); d.rotation.y = Math.atan2(dir.x, dir.z);
-                            }
-                        }
-
-                        d.position.y = getMapHeight(d.position.x, d.position.z);
-
-                        let aniTime = time * (state === 'walk' ? (isAggro ? 8 : 4) : 0);
-                        const limbs = d.userData.limbs;
-                        if (state === 'walk') {
-                            limbs.lArm.rotation.x = Math.sin(aniTime) * 0.6; limbs.rArm.rotation.x = -Math.sin(aniTime) * 0.6;
-                            limbs.lLeg.rotation.x = -Math.sin(aniTime) * 0.6; limbs.rLeg.rotation.x = Math.sin(aniTime) * 0.6;
-                            limbs.torso.rotation.x = 0;
-                            if (d.userData.golemType === 1 && Math.random() < 0.2) spawnParticles(d.position, 0xd2b48c, 1, 3, 0.5, 1, true);
-                            if (d.userData.golemType === 2 && Math.random() < 0.1) spawnParticles(d.position, 0x44ffff, 1, 2, 0.6);
-                        } else if (state === 'attack') {
-                            let prog = 1.0 - d.userData.attackAnim;
-                            if (d.userData.golemType === 0) { limbs.rArm.rotation.x = prog < 0.5 ? -Math.PI : THREE.MathUtils.lerp(limbs.rArm.rotation.x, Math.PI/4, 0.3); } 
-                            else { limbs.rArm.rotation.x = prog < 0.5 ? -Math.PI/2 : THREE.MathUtils.lerp(limbs.rArm.rotation.x, Math.PI/4, 0.2); limbs.lArm.rotation.x = prog < 0.5 ? -Math.PI/2 : THREE.MathUtils.lerp(limbs.lArm.rotation.x, Math.PI/4, 0.2); }
-                            limbs.lLeg.rotation.x = 0; limbs.rLeg.rotation.x = 0;
-                        } else if (state === 'hit') { limbs.torso.rotation.x = -0.2; } 
-                        else {
-                            limbs.lArm.rotation.x = Math.sin(time*2)*0.1; limbs.rArm.rotation.x = -Math.sin(time*2)*0.1;
-                            limbs.lLeg.rotation.x = 0; limbs.rLeg.rotation.x = 0; limbs.torso.rotation.x = 0;
-                            if (d.userData.golemType === 2 && Math.random() < 0.05) spawnParticles(d.position, 0x44ffff, 1, 2, 0.6);
-                        }
-                    }
-
-                    if (d.userData.flashTimer > 0) { d.userData.flashTimer -= dt; if (d.userData.flashTimer <= 0) { d.traverse(c => { if(c.isMesh && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); } } else { d.traverse(c => { if(c.isMesh && c.userData.baseColor !== undefined) c.material.color.setHex(c.userData.baseColor); }); }
-                }
-            });
-
+            updateGolems(dt, time);
             for(let i = ghosts.length - 1; i >= 0; i--) { const g = ghosts[i]; g.life -= rawDt; if(g.life <= 0) { scene.remove(g.mesh); ghosts.splice(i, 1); } else { const op = (g.life / g.maxLife) * 0.4; g.mesh.traverse(c => { if(c.isMesh) c.material.opacity = op; }); } }
-            for (let i = activeParticles.length - 1; i >= 0; i--) {
-                const p = activeParticles[i]; p.life -= dt;
-                if (p.life <= 0) { scene.remove(p.mesh); activeParticles.splice(i, 1); } 
-                else {
-                    if (p.isFlash) { p.mesh.scale.setScalar(1 + (1 - p.life/p.maxLife)*0.5); p.mesh.material.opacity = p.life/p.maxLife; }
-                    else if (p.isVolume) { const s = 1 + (1 - p.life/p.maxLife) * p.maxScale; p.mesh.scale.setScalar(s); p.mesh.material.opacity = (p.life/p.maxLife) * 0.7; }
-                    else if (p.isWave) { const s = 1 + (1 - p.life/p.maxLife) * p.maxScale; p.mesh.scale.set(s, s, s); p.mesh.material.opacity = p.life/p.maxLife; } 
-                    else if (p.isBolt) { p.mesh.material.opacity = p.life/p.maxLife; }
-                    else { if(p.isSmoke) { p.vel.y += rawDt * 10; } else { p.vel.y -= rawDt * 15; } p.mesh.position.addScaledVector(p.vel, dt); p.mesh.material.opacity = p.life / p.maxLife; p.mesh.scale.setScalar(p.life / p.maxLife * 1.5); p.mesh.rotation.x += p.rotSpeed.x * dt * 20; p.mesh.rotation.y += p.rotSpeed.y * dt * 20; }
-                }
-            }
+            updateParticles(dt, rawDt);
 
             camTargetPos.lerp(playerGroup.position, 0.15); const targetVec = new THREE.Vector3(camTargetPos.x, camTargetPos.y + 2.0*playerGroup.scale.y, camTargetPos.z);
             const dirY = Math.cos(camPitch); const hDist = Math.sin(camPitch); const dirX = Math.sin(camYaw) * hDist; const dirZ = Math.cos(camYaw) * hDist; const rayDir = new THREE.Vector3(dirX, dirY, dirZ).normalize();
