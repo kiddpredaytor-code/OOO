@@ -62,11 +62,6 @@
 
         #floating-texts { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
         .float-text { position: absolute; color: #fff; font-weight: 900; font-size: 20px; text-shadow: 0 2px 4px #000, 0 0 8px #ff0055; pointer-events: none; animation: floatUp 0.8s cubic-bezier(0.1, 0.8, 0.3, 1) forwards; transform: translate(-50%, -50%); }
-        
-        #oracle-ui { position: absolute; top: 20px; right: 20px; pointer-events: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; z-index: 50;}
-        #oracle-chat { background: rgba(0, 10, 20, 0.85); color: #00e5ff; padding: 12px; border: 1px solid #00e5ff; border-radius: 8px; display: none; max-height: 250px; overflow-y: auto; width: 280px; font-size: 13px; text-shadow: 0 0 5px rgba(0,229,255,0.5); backdrop-filter: blur(5px); }
-        #oracle-input { width: 258px; display: none; background: rgba(0,0,0,0.7); color: #fff; border: 1px solid #00ff88; padding: 10px; border-radius: 8px; outline: none; }
-        #oracle-btn { background: radial-gradient(circle, #00e5ff 0%, #0088aa 100%); color: #000; font-weight: bold; border: 2px solid rgba(255,255,255,0.5); padding: 10px 20px; border-radius: 20px; cursor: pointer; box-shadow: 0 0 10px #00e5ff; text-transform: uppercase; font-size: 12px; }
 
         @keyframes floatUp { 0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; } 20% { transform: translate(-50%, -60px) scale(1.2); opacity: 1; } 100% { transform: translate(-50%, -120px) scale(0.8); opacity: 0; } }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -81,12 +76,6 @@
         <div id="time-filter"></div>
         <div id="screen-flash"></div>
         <div id="player-hp-container"><div id="player-hp-fill"></div></div>
-        
-        <div id="oracle-ui">
-            <div id="oracle-chat"></div>
-            <input type="text" id="oracle-input" placeholder="Ask the AI Oracle...">
-            <button id="oracle-btn">ORACLE</button>
-        </div>
 
         <div id="zoom-container">
             <span>ZOOM</span>
@@ -125,9 +114,7 @@
         function dScale(value) { return Math.pow(value, 0.65); } 
 
         const State = { mana: 0, sharp: 0, round: 0, line: 0, spellType: 'NONE' };
-        // Added activeAura tracking
         const PlayerStats = { hp: 100, maxHp: 100, baseSpeed: 28, speedMultiplier: 1.0, buffTimer: 0, lastMana: 0, isHighEnhance: false, healTimer: 0, healRate: 0, titanTimer: 0, titanMult: 1.0, frostTimer: 0, activeAura: null };
-        // Fixed physics: decoupled velocities for momentum
         const Physics = { velX: 0, velZ: 0, velocityY: 0, gravity: 75, isGrounded: true, baseJumpForce: 30 };
         const COLORS = { mana: 0x00e5ff, sharp: 0xff0055, round: 0xa200ff, line: 0x00ff88, cast: 0xffaa00, env: 0x05050a, grid: 0x2a2a4a, meteor: 0xff4400, beam: 0x00ffcc, cloud: 0x6688ff, heal: 0x00ff55, terrain: 0x8b5a2b, titan: 0xffcc00 };
         
@@ -145,49 +132,6 @@
             muzzleSphere: new THREE.SphereGeometry(1, 16, 16)
         };
         const particleGeos = [GeoCache.particleIco, GeoCache.particleOct, GeoCache.particleBox, GeoCache.particleTet];
-
-        // --- GEMINI ORACLE ---
-        async function askOracle(text) {
-            const apiKey = "";
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-            const payload = {
-                contents: [{ parts: [{ text }] }],
-                systemInstruction: { parts: [{ text: "You are the cynical magic oracle of the arena. Keep answers under 2 sentences." }] }
-            };
-            let delays = [1000, 2000, 4000, 8000, 16000];
-            for (let i = 0; i <= delays.length; i++) {
-                try {
-                    let res = await fetch(url, { method: "POST", body: JSON.stringify(payload) });
-                    if (!res.ok) throw new Error("API fail");
-                    let data = await res.json();
-                    return data.candidates?.[0]?.content?.parts?.[0]?.text || "The Oracle shrugs.";
-                } catch (e) {
-                    if (i === delays.length) return "Oracle connection shattered.";
-                    await new Promise(r => setTimeout(r, delays[i]));
-                }
-            }
-        }
-
-        document.getElementById('oracle-btn').addEventListener('pointerdown', async (e) => {
-            e.stopPropagation(); e.preventDefault();
-            const chat = document.getElementById('oracle-chat');
-            const inp = document.getElementById('oracle-input');
-            if (inp.style.display === 'none') {
-                chat.style.display = 'block'; inp.style.display = 'block';
-            } else {
-                const val = inp.value.trim();
-                if (val) {
-                    chat.innerHTML += `<div style="color:#aaa; margin-top:5px;"><b>You:</b> ${val}</div>`;
-                    inp.value = "Communing..."; inp.disabled = true;
-                    const reply = await askOracle(val);
-                    chat.innerHTML += `<div style="margin-top:2px;"><b>Oracle:</b> ${reply}</div>`;
-                    inp.value = ""; inp.disabled = false;
-                    chat.scrollTop = chat.scrollHeight;
-                } else {
-                    chat.style.display = 'none'; inp.style.display = 'none';
-                }
-            }
-        });
 
         const canvas = document.getElementById('game-canvas');
         const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
@@ -895,28 +839,36 @@
                 else if (sp.type === 'beam' || sp.type === 'enemy_beam') {
                     const t = sp.life/sp.maxLife; 
                     sp.beamCore.material.opacity = t; 
-                    sp.spirals.children.forEach(c => c.material.opacity = t*0.8);
+                    
+                    // Fixed crash: Players use auras, Enemies use spirals
+                    if (sp.spirals) sp.spirals.children.forEach(c => c.material.opacity = t*0.8);
+                    if (sp.auras) sp.auras.forEach(a => a.material.opacity = t*0.8);
+                    
                     sp.muzzle.scale.setScalar(1 + Math.sin(time * 40) * 0.3);
                     sp.muzzle.material.opacity = t;
                     
-                    sp.spirals.rotation.z += dt * 35; 
+                    if (sp.spirals) sp.spirals.rotation.z += dt * 35; 
 
                     let currentLen = sp.maxLen; beamRaycaster.set(sp.mesh.position, sp.dir);
-                    const intersects = beamRaycaster.intersectObjects(cameraColliders, true); if(intersects.length > 0 && intersects[0].distance < currentLen) { currentLen = intersects[0].distance; }
+                    const intersects = beamRaycaster.intersectObjects(cameraColliders, true); 
+                    if(intersects.length > 0 && intersects[0].distance < currentLen) { currentLen = intersects[0].distance; }
                     
                     if (sp.type === 'beam') {
                         const dmgIntersects = beamRaycaster.intersectObjects(damageableColliders, false); if(dmgIntersects.length > 0 && dmgIntersects[0].distance < currentLen) { currentLen = dmgIntersects[0].distance; let hitDummy = dummies.find(d => d.children.includes(dmgIntersects[0].object)); if(hitDummy) applyDamage(hitDummy, sp.damage * dt * 60); }
                     } else if (sp.type === 'enemy_beam') {
-                        const pDist = new THREE.Vector3().subVectors(playerGroup.position, sp.mesh.position);
+                        // Re-calibrated hitbox to player's center-mass to prevent missed raycast collisions
+                        const pCenter = playerGroup.position.clone(); pCenter.y += 3.0;
+                        const pDist = new THREE.Vector3().subVectors(pCenter, sp.mesh.position);
                         const proj = pDist.dot(sp.dir);
-                        if (proj > 0 && proj < currentLen) {
+                        if (proj > 0 && proj < currentLen + 1.0) { // added tolerance
                             const closestP = sp.mesh.position.clone().add(sp.dir.clone().multiplyScalar(proj));
-                            if (closestP.distanceTo(playerGroup.position) < playerRadius + 1.5) { applyDamageToPlayer(sp.damage * dt * 60); }
+                            if (closestP.distanceTo(pCenter) < playerRadius + 1.5) { applyDamageToPlayer(sp.damage * dt * 60); }
                         }
                     }
                     
                     sp.beamCore.scale.z = currentLen; 
-                    sp.spirals.scale.z = currentLen; 
+                    if (sp.spirals) sp.spirals.scale.z = currentLen; 
+                    if (sp.auras) sp.auras.forEach(a => a.scale.z = currentLen);
                     
                     if(currentLen < sp.maxLen) { 
                         const hitPos = sp.mesh.position.clone().add(sp.dir.clone().multiplyScalar(currentLen)); 
@@ -1006,7 +958,11 @@
                                 if(d.userData.attackAnim <= 1.0 && !d.userData.hasAttacked) {
                                     d.userData.hasAttacked = true;
                                     const firePos = new THREE.Vector3(d.position.x, d.position.y+15, d.position.z);
-                                    const fireDir = playerGroup.position.clone().sub(firePos).normalize();
+                                    
+                                    // Aim correction: target chest, not the floor.
+                                    const targetPos = playerGroup.position.clone(); targetPos.y += 3.0;
+                                    const fireDir = targetPos.sub(firePos).normalize();
+                                    
                                     createEnemyBeam(firePos, fireDir, 1.5, 1.0);
                                     shakeTime = 0.5; shakeIntensity = 0.6;
                                 }
