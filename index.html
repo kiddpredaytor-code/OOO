@@ -764,7 +764,11 @@
             const flash = new THREE.Mesh(new THREE.SphereGeometry(radius*0.8, 16, 16), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 1, blending: THREE.AdditiveBlending})); flash.position.copy(pos); scene.add(flash); activeParticles.push({mesh: flash, isFlash: true, life: 0.3, maxLife: 0.3});
             for(let i=0; i<3; i++) { const wave = new THREE.Mesh(new THREE.RingGeometry(0.1, radius*(1 + i*0.5), 32), new THREE.MeshBasicMaterial({color: i%2===0 ? 0xffffff : volColor, transparent: true, opacity: 0.8 - i*0.2, side: THREE.DoubleSide, blending: THREE.AdditiveBlending})); wave.position.copy(pos); wave.rotation.x = Math.PI/2; scene.add(wave); activeParticles.push({ mesh: wave, isWave: true, life: 0.3 + i*0.1, maxLife: 0.3 + i*0.1, maxScale: radius*(1 + i*0.5) }); }
             if (isMeteor) { spawnParticles(pos, 0xffffff, 40, 40, 0.5, 0.8); spawnParticles(pos, 0x222222, 50, 15, 2.0, 3.0, true); } else if (sharp >= 10) { spawnParticles(pos, 0xffffff, 20 + sharp, 30, 0.4, 0.5); for(let i=0; i<4; i++) { const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, radius*2.5, 3), new THREE.MeshBasicMaterial({color: 0xaa00ff, wireframe:true})); bolt.position.copy(pos); bolt.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI); scene.add(bolt); activeParticles.push({mesh: bolt, isBolt: true, life: 0.25, maxLife: 0.25}); } } else { spawnParticles(pos, COLORS.sharp, 15 + sharp, 15 + mana, 0.5 + mana*0.05, 1); }
-            dummies.forEach(d => { if ((sharp >= 10 || isMeteor) && d.position.distanceTo(pos) < radius + d.userData.r + 5) d.traverse(c => { if(c.isMesh && c.material) c.material.color.setHex(0xffffff); }); if (d.position.distanceTo(pos) < radius + d.userData.r) applyDamage(d, dmg); });
+            dummies.forEach(d => { 
+                let dCenter = d.position.clone(); dCenter.y += d.userData.r * 1.5;
+                if ((sharp >= 10 || isMeteor) && dCenter.distanceTo(pos) < radius + d.userData.r + 5) d.traverse(c => { if(c.isMesh && c.material) c.material.color.setHex(0xffffff); }); 
+                if (dCenter.distanceTo(pos) < radius + d.userData.r) applyDamage(d, dmg); 
+            });
         }
 
         function applyDamage(dummy, amount) {
@@ -808,7 +812,9 @@
             
             for(let obs of obstacles) {
                 if(obs.isTerrainGroup || (obs.mesh && obs.mesh.userData && obs.mesh.userData.hp <= 0)) continue; 
-                let dx = nextX - obs.x; let dz = nextZ - obs.z; let distSq = dx*dx + dz*dz; let minDist = playerRadius + obs.r;
+                let ox = obs.x !== undefined ? obs.x : obs.mesh.position.x;
+                let oz = obs.z !== undefined ? obs.z : obs.mesh.position.z;
+                let dx = nextX - ox; let dz = nextZ - oz; let distSq = dx*dx + dz*dz; let minDist = playerRadius + obs.r;
                 if(distSq < minDist * minDist) { let dist = Math.sqrt(distSq); if(dist === 0) { dx=1; dist=1; } let overlap = minDist - dist; nextX += (dx/dist) * overlap; nextZ += (dz/dist) * overlap; }
             }
             playerGroup.position.x = nextX; playerGroup.position.z = nextZ;
@@ -846,12 +852,21 @@
                     else { sp.mesh.rotation.x += dt*5; sp.mesh.rotation.z += dt*5; spawnParticles(sp.mesh.position, 0x5c4033, 1, 2, 0.3); }
 
                     let hitSomething = false; let groundH = getMapHeight(sp.mesh.position.x, sp.mesh.position.z); if (sp.mesh.position.y < groundH + 0.2) hitSomething = true; 
-                    if (!hitSomething) { for (let obs of obstacles) { if(obs.isTerrainGroup || (obs.mesh && obs.mesh === sp.mesh)) continue; let dx = sp.mesh.position.x - obs.x; let dz = sp.mesh.position.z - obs.z; if (dx*dx + dz*dz < (obs.r + 1.0)*(obs.r + 1.0)) { hitSomething = true; break; } } }
+                    if (!hitSomething) { 
+                        for (let obs of obstacles) { 
+                            if(obs.isTerrainGroup || obs.isDummy || (obs.mesh && obs.mesh === sp.mesh)) continue; 
+                            let ox = obs.x !== undefined ? obs.x : obs.mesh.position.x;
+                            let oz = obs.z !== undefined ? obs.z : obs.mesh.position.z;
+                            let dx = sp.mesh.position.x - ox; let dz = sp.mesh.position.z - oz; 
+                            if (dx*dx + dz*dz < (obs.r + 1.0)*(obs.r + 1.0)) { hitSomething = true; break; } 
+                        } 
+                    }
                     if (!hitSomething) { 
                         if(sp.type === 'projectile' || sp.type === 'swarm') { 
                             for (let d of dummies) { 
                                 if (sp.hitList.includes(d)) continue; 
-                                if (sp.mesh.position.distanceTo(d.position) < 4.0 + d.userData.r) { 
+                                let dCenter = d.position.clone(); dCenter.y += d.userData.r * 1.5;
+                                if (sp.mesh.position.distanceTo(dCenter) < 3.0 + d.userData.r) { 
                                     applyDamage(d, sp.damage); sp.hitList.push(d); 
                                     if(sp.type === 'projectile') { sp.penetration--; triggerExplosion(sp.mesh.position, sp.mana, sp.sharp); if (sp.penetration <= 0) hitSomething = true; }
                                     else { hitSomething = true; spawnParticles(sp.mesh.position, 0xff0000, 10, 5, 0.3); } 
@@ -923,7 +938,7 @@
                 }
                 else if (sp.type === 'shield') {
                     sp.mesh.position.copy(playerGroup.position); sp.mesh.position.y += 2.0 * playerGroup.scale.y; sp.extras.forEach(ext => { ext.mesh.rotation.x += dt * ext.speedX; ext.mesh.rotation.y += dt * ext.speedY; }); const pulse = 1 + Math.sin(time * 12) * 0.05; sp.mesh.scale.setScalar(pulse * playerGroup.scale.x);
-                    sp.pulseTimer -= dt; if (sp.pulseTimer <= 0) { sp.pulseTimer = 0.3; for (let d of dummies) { if (d.position.distanceTo(playerGroup.position) < sp.radius*playerGroup.scale.x + d.userData.r) { applyDamage(d, sp.damage); spawnParticles(d.position, COLORS.mana, 8, 15, 0.4); } } }
+                    sp.pulseTimer -= dt; if (sp.pulseTimer <= 0) { sp.pulseTimer = 0.3; for (let d of dummies) { let dCenter = d.position.clone(); dCenter.y += d.userData.r * 1.5; if (dCenter.distanceTo(playerGroup.position) < sp.radius*playerGroup.scale.x + d.userData.r) { applyDamage(d, sp.damage); spawnParticles(d.position, COLORS.mana, 8, 15, 0.4); } } }
                     if (sp.life <= 0) { scene.remove(sp.mesh); spells.splice(i, 1); } else { const fade = Math.min(1.0, sp.life / 0.8); sp.mesh.children.forEach(c => { if(c.material && c.userData.baseOpacity) c.material.opacity = c.userData.baseOpacity * fade; }); }
                 }
                 else if (sp.type === 'wave') {
@@ -931,7 +946,8 @@
                     sp.mesh.scale.set(1 + (1.5-sp.life)*2, 1 + (1.5-sp.life)*2, 1);
                     sp.mesh.material.opacity = sp.life / 1.5 * 0.6;
                     dummies.forEach(d => {
-                        if (sp.mesh.position.distanceTo(d.position) < sp.radius * sp.mesh.scale.x + d.userData.r) {
+                        let dCenter = d.position.clone(); dCenter.y += d.userData.r * 1.5;
+                        if (sp.mesh.position.distanceTo(dCenter) < sp.radius * sp.mesh.scale.x + d.userData.r) {
                             let pushDir = d.position.clone().sub(playerGroup.position).normalize(); pushDir.y = 0;
                             d.position.addScaledVector(pushDir, sp.pushForce * dt);
                             applyDamage(d, sp.damage * dt); spawnParticles(d.position, 0x00aaff, 1, 5, 0.2);
@@ -945,7 +961,8 @@
                     spawnParticles(sp.mesh.position, 0x00ff00, 2, 20, 0.3, 1, true); 
                     
                     dummies.forEach(d => {
-                        let dist = d.position.distanceTo(sp.mesh.position);
+                        let dCenter = d.position.clone(); dCenter.y += d.userData.r * 1.5;
+                        let dist = dCenter.distanceTo(sp.mesh.position);
                         if (dist < sp.pullRadius) {
                             let pullDir = sp.mesh.position.clone().sub(d.position).normalize(); pullDir.y = 0;
                             d.position.addScaledVector(pullDir, (sp.pullForce / Math.max(1, dist/10)) * dt);
@@ -1119,7 +1136,7 @@
             for(let i = clouds.length - 1; i >= 0; i--) {
                 const c = clouds[i]; c.life -= dt; if (c.life <= 0) { scene.remove(c.mesh); clouds.splice(i, 1); continue; }
                 c.mesh.position.y = playerGroup.position.y + 10*playerGroup.scale.y + Math.sin(time * 2) * 2;
-                if(!c.target || c.target.userData.hp <= 0) { let minDist = 150; c.target = null; dummies.forEach(d => { const dist = c.mesh.position.distanceTo(d.position); if(dist < minDist) { minDist = dist; c.target = d; } }); }
+                if(!c.target || c.target.userData.hp <= 0) { let minDist = 150; c.target = null; dummies.forEach(d => { let dCenter = d.position.clone(); dCenter.y += d.userData.r * 1.5; const dist = c.mesh.position.distanceTo(dCenter); if(dist < minDist) { minDist = dist; c.target = d; } }); }
                 if(c.target) {
                     const cloudTarg = c.target.position.clone(); cloudTarg.y += 15; c.mesh.position.lerp(cloudTarg, 0.03 * globalTimeScale);
                     c.attackTimer -= dt; if (c.attackTimer <= 0) { c.attackTimer = 5.0; c.target.userData.freezeTimer = c.freezeDur; applyDamage(c.target, 50); const dist = c.mesh.position.distanceTo(c.target.position); const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, dist, 4).translate(0, dist/2, 0), new THREE.MeshBasicMaterial({color: 0xffffff, blending: THREE.AdditiveBlending})); bolt.position.copy(c.target.position); bolt.lookAt(c.mesh.position); bolt.rotation.x -= Math.PI/2; scene.add(bolt); activeParticles.push({mesh: bolt, isBolt: true, life: 0.2, maxLife: 0.2}); spawnParticles(c.target.position, COLORS.cloud, 20, 10, 0.5, 2.0); }
